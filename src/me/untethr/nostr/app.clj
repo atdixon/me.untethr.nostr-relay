@@ -201,8 +201,8 @@
 (defn- ring-handler [metrics db subs-atom fulfill-atom]
   (ring/ring-handler
     (ring/router
-      [["/ws" {:get
-               (partial handler metrics db subs-atom fulfill-atom)}]
+      [["/" {:get
+             (partial handler metrics db subs-atom fulfill-atom)}]
        ["/metrics" {:get (partial handler-metrics metrics)}]])))
 
 ;; --
