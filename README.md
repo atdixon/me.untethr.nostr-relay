@@ -4,7 +4,7 @@ A [nostr](https://github.com/fiatjaf/nostr/) relay, written in Clojure.
 
 ### Run
 
-For a real deployment you'll want to deploy with ssl (eg [ngnix](https://www.nginx.com/))
+For a real deployment you'll want to deploy with ssl termination (eg [ngnix](https://www.nginx.com/))
 but for local testing, simply:
 
 ```
