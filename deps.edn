@@ -1,0 +1,39 @@
+{:deps
+ {org.clojure/clojure {:mvn/version "1.10.3"}
+
+  http-kit/http-kit {:mvn/version "2.6.0-alpha1"}
+  metosin/reitit-core {:mvn/version "0.5.15"}
+  metosin/reitit-ring {:mvn/version "0.5.15"}
+
+  org.xerial/sqlite-jdbc {:mvn/version "3.36.0.2"}
+  seancorfield/next.jdbc {:mvn/version "1.2.659"}
+
+  fr.acinq.secp256k1/secp256k1-kmp {:mvn/version "0.6.2"}
+  fr.acinq.secp256k1/secp256k1-kmp-jni-jvm {:mvn/version "0.6.2"}
+
+  metosin/jsonista {:mvn/version "0.3.5"}
+
+  com.google.guava/guava {:mvn/version "31.0.1-jre"}
+
+  metrics-clojure/metrics-clojure {:mvn/version "2.10.0"}
+  io.dropwizard.metrics/metrics-json {:mvn/version "3.2.2"}
+
+  org.clojure/tools.logging {:mvn/version "1.2.4"}
+  ch.qos.logback/logback-classic {:mvn/version "1.2.10"}}
+
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.0" :git/sha "b3fd0d2"}
+                      org.clojure/test.check {:mvn/version "1.1.1"}
+                      org.clojure/data.csv {:mvn/version "1.0.0"}}
+         :main-opts ["-m" "cognitect.test-runner"]
+         :exec-fn cognitect.test-runner.api/test}
+  :perf {:extra-deps {criterium/criterium {:mvn/version "0.4.6"}
+                      com.clojure-goes-fast/clj-async-profiler {:mvn/version "0.5.1"}}}
+  :hacking {:extra-deps
+            {org.bouncycastle/bcprov-jdk15on {:mvn/version "1.70"}
+             org.graalvm.js/js {:mvn/version "22.0.0"}}}
+  :uberdeps {:replace-deps {uberdeps/uberdeps {:mvn/version "1.1.2"}}
+             :replace-paths []
+             :main-opts ["-m" "uberdeps.uberjar"]}}}
