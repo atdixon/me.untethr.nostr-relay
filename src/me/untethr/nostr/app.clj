@@ -1,8 +1,10 @@
 (ns me.untethr.nostr.app
   (:require
-    [jsonista.core :as json]
+    [clj-yaml.core :as yaml]
+    [clojure.java.io :as io]
     [clojure.string :as str]
     [clojure.tools.logging :as log]
+    [jsonista.core :as json]
     [me.untethr.nostr.crypt :as crypt]
     [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.metrics :as metrics]
@@ -11,10 +13,10 @@
     [me.untethr.nostr.validation :as validation]
     [next.jdbc :as jdbc]
     [org.httpkit.server :as hk]
-    [reitit.ring :as ring]
-    [clojure.java.io :as io])
+    [reitit.ring :as ring])
   (:import (java.nio.charset StandardCharsets)
-           (java.util UUID)))
+           (java.util UUID)
+           (java.io File)))
 
 (def json-mapper
   (json/object-mapper
@@ -92,7 +94,7 @@
   [message]
   (write-str* ["NOTICE" message]))
 
-(def max-filters 4)
+(def max-filters 6)
 
 (defn- receive-req
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
@@ -174,12 +176,12 @@
   (= (some-> req :headers (get "accept") str/trim) "application/nostr+json"))
 
 (defn- nip11-response
-  []
+  [nip11-json]
   {:status 200
    :headers {"Content-Type" "application/nostr+json"}
-   :body (slurp (io/resource "me/untethr/nostr/nip11.json"))})
+   :body nip11-json})
 
-(defn- handler [metrics db subs-atom fulfill-atom req]
+(defn- handler [nip11-json metrics db subs-atom fulfill-atom req]
   ;; req contains :remote-addr, :headers {}, ...
   (cond
     (:websocket? req)
@@ -188,21 +190,29 @@
         {:on-open (partial ws-open metrics db subs-atom fulfill-atom websocket-state)
          :on-receive (partial ws-receive metrics db subs-atom fulfill-atom websocket-state)
          :on-close (partial ws-close metrics db subs-atom fulfill-atom websocket-state)}))
-    (nip11-request? req)
-    (nip11-response)))
+    (and (nip11-request? req) nip11-json)
+    (nip11-response nip11-json)))
 
 (defn- handler-metrics [metrics _req]
   {:status 200
    :headers {"Content-Type" "application/json"}
    :body (write-str* (:codahale-registry metrics))})
 
+(defn- handler-nip05 [nip05-json _req]
+  (when nip05-json
+    {:status 200
+     :headers {"Content-Type" "application/json"
+               "Access-Control-Allow-Origin" "*"}
+     :body nip05-json}))
+
 ;; --
 
-(defn- ring-handler [metrics db subs-atom fulfill-atom]
+(defn- ring-handler [nip05-json nip11-json metrics db subs-atom fulfill-atom]
   (ring/ring-handler
     (ring/router
       [["/" {:get
-             (partial handler metrics db subs-atom fulfill-atom)}]
+             (partial handler nip11-json metrics db subs-atom fulfill-atom)}]
+       ["/.well-known/nostr.json" {:get (partial handler-nip05 nip05-json)}]
        ["/metrics" {:get (partial handler-metrics metrics)}]])))
 
 ;; --
@@ -212,23 +222,45 @@
 ;; ?: record origin/agent/etc
 ;; ?: ngnix + jvm config
 ;; ?: rate-limit subscription requests, events, etc.
-;; ?: more metrics
+;; ?: simple auth for metrics?
 
 (defn go!
-  ([] (go! "./n.db" 9090))
-  ([db-path server-port]
-   (let [db (store/init! db-path)
-         subs-atom (atom (subscribe/create-empty-subs))
-         fulfill-atom (atom (fulfill/create-empty-registry))
-         metrics (metrics/create-metrics
-                   #(store/max-event-rowid db)
-                   #(subscribe/num-subscriptions subs-atom)
-                   #(subscribe/num-firehose-filters subs-atom))]
-     (hk/run-server
-       (ring-handler metrics db subs-atom fulfill-atom)
-       {:port server-port :max-ws 524288})
-     (log/info "server started; sleeping forever")
-     (Thread/sleep Integer/MAX_VALUE))))
+  [db-path server-port nip05-json nip11-json]
+  (let [db (store/init! db-path)
+        subs-atom (atom (subscribe/create-empty-subs))
+        fulfill-atom (atom (fulfill/create-empty-registry))
+        metrics (metrics/create-metrics
+                  #(store/max-event-rowid db)
+                  #(subscribe/num-subscriptions subs-atom)
+                  #(subscribe/num-firehose-filters subs-atom))]
+    (hk/run-server
+      (ring-handler nip05-json nip11-json metrics db subs-atom fulfill-atom)
+      {:port server-port :max-ws 4194304})
+    (log/infof "server started on port %d; sleeping forever" server-port)
+    (Thread/sleep Integer/MAX_VALUE)))
+
+(defn- slurp-json*
+  [f]
+  (let [^File f (io/as-file f)]
+    (when (.exists f)
+      (doto (slurp f)
+        ;; we keep json exactly as-is but send it through
+        ;; read-write here simply as validation
+        (->
+          (json/read-value json-mapper)
+          (json/write-value-as-string json-mapper))))))
+
+(defn- parse-config
+  []
+  (with-open [r (io/reader "conf/relay.yaml")]
+    (yaml/parse-stream r)))
 
 (defn -main [& args]
-  (go!))
+  (let [conf (parse-config)
+        nip05-json (slurp-json* "conf/nip05.json")
+        nip11-json (slurp-json* "conf/nip11.json")]
+    (go!
+      (get-in conf [:sqlite :file])
+      (get-in conf [:http :port])
+      nip05-json
+      nip11-json)))

@@ -1,14 +1,14 @@
 (ns test.subscribe-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer :all]
             [clojure.test.check :as tc]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [clojure.tools.logging :as log]
             [me.untethr.nostr.app :as app]
             [me.untethr.nostr.subscribe :as subscribe]
-            [test.test-data :as test-data]
-            [clojure.string :as str]
-            [me.untethr.nostr.metrics :as metrics])
+            [me.untethr.nostr.metrics :as metrics]
+            [test.test-data :as test-data])
   (:import (java.util List)))
 
 (defn- throw-fn
@@ -193,3 +193,19 @@
               filter-tuples)))]
     (let [res (tc/quick-check 50 prop :seed seed)]
       (is (:pass? res) (pr-str res)))))
+
+(deftest regression-test
+  (with-open [data-src (io/reader
+                         (io/resource "me/untethr/nostr/regression-data.txt"))]
+    (let [metrics-fake (metrics/create-metrics)
+          subs-atom (atom (subscribe/create-empty-subs))
+          data (line-seq data-src)
+          [_req req-id & req-filters] (#'app/parse (nth data 0))
+          raw-evt (nth data 1)
+          [_ evt] (#'app/parse raw-evt)
+          result-atom (atom nil)]
+
+      (subscribe/subscribe! subs-atom "scope-0" "main-channel"
+        req-filters #(swap! result-atom (fnil conj []) %))
+      (subscribe/notify! metrics-fake subs-atom evt raw-evt)
+      (is (= @result-atom [raw-evt])))))

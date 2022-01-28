@@ -12,10 +12,12 @@
   fr.acinq.secp256k1/secp256k1-kmp-jni-jvm {:mvn/version "0.6.2"}
 
   metosin/jsonista {:mvn/version "0.3.5"}
+  clj-commons/clj-yaml {:mvn/version "0.7.107"}
 
   com.google.guava/guava {:mvn/version "31.0.1-jre"}
 
   metrics-clojure/metrics-clojure {:mvn/version "2.10.0"}
+  metrics-clojure-jvm/metrics-clojure-jvm {:mvn/version "2.10.0"}
   io.dropwizard.metrics/metrics-json {:mvn/version "3.2.2"}
 
   org.clojure/tools.logging {:mvn/version "1.2.4"}

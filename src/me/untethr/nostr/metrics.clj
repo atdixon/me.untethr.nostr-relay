@@ -1,15 +1,15 @@
 (ns me.untethr.nostr.metrics
   (:require
-    [metrics.core :refer [new-registry]]
+    [metrics.core :as metrics-core :refer [new-registry]]
     [metrics.counters :refer [counter inc! dec!]]
     [metrics.gauges :refer [gauge gauge-fn]]
     [metrics.histograms :refer [histogram update!]]
     [metrics.meters :refer [meter mark!]]
     [metrics.timers :refer [timer time!]])
   (:import (com.codahale.metrics MetricRegistry Meter Histogram Timer Counter)
-           (java.util.concurrent.atomic AtomicInteger)
            (com.codahale.metrics.json MetricsModule)
-           (java.util.concurrent TimeUnit)))
+           (java.util.concurrent TimeUnit)
+           (com.codahale.metrics.jvm MemoryUsageGaugeSet)))
 
 (defrecord Metrics
   [^MetricRegistry codahale-registry
@@ -36,11 +36,18 @@
   []
   (MetricsModule. (TimeUnit/SECONDS) (TimeUnit/MILLISECONDS) false))
 
+(defn memory-usage-gauge-set
+  []
+  (proxy [MemoryUsageGaugeSet] []
+    (getMetrics []
+      (select-keys (proxy-super getMetrics) ["total.used" "total.max"]))))
+
 (defn create-metrics
   ([] ;; arity for testing
    (create-metrics (constantly -1) (constantly -1) (constantly -1)))
   ([quick-row-count-fn num-subscriptions-fn num-firehose-filters-fn]
    (let [codahale (new-registry)]
+     (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
      (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
      (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
      (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)

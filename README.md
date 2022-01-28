@@ -13,6 +13,11 @@ $ make run
 ```
 
 The relay will be reachable at `ws://localhost:9090` and data
-in a git-ignored `./n.db` sqlite file.
+in a git-ignored `./n.db` sqlite file 
 
 With various app metrics available at `http://localhost:9090/metrics`.
+
+Edit `./conf/relay.yaml` to change port, file, etc.
+
+### Notes
+

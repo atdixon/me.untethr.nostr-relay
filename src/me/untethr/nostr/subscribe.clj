@@ -40,13 +40,13 @@
 (defn- candidate-filters
   ^Set [subs-snapshot id pubkey tags]
   (let [candidates (Sets/newIdentityHashSet)]
-    (->> [:author->filters pubkey] (get-in subs-snapshot) vals ^Collection (into []) (.addAll candidates))
-    (->> [:id->filters id] (get-in subs-snapshot) vals ^Collection (into []) (.addAll candidates))
-    (->> :firehose-filters (get subs-snapshot) vals ^Collection (into []) (.addAll candidates))
+    (->> [:author->filters pubkey] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
+    (->> [:id->filters id] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
+    (->> :firehose-filters (get subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
     (doseq [[tag-kind arg0] tags]
       (condp = tag-kind
-        "e" (->> [:e#->filters arg0] (get-in subs-snapshot) vals ^Collection (into []) (.addAll candidates))
-        "p" (->> [:p#->filters arg0] (get-in subs-snapshot) vals ^Collection (into []) (.addAll candidates))))
+        "e" (->> [:e#->filters arg0] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
+        "p" (->> [:p#->filters arg0] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))))
     candidates))
 
 (defn notify!
@@ -87,12 +87,12 @@
       (let [compiled-filter (compile-filter sid filter observer) ;; singleton across registry (identity determines uniqueness)
             subs' (update-in subs' [:sid->filters sid] (fnil conj []) filter)] ;; not compiled filter!
         (if (every? empty? [authors p# ids e#])
-          (update subs' :firehose-filters assoc sid compiled-filter)
+          (update subs' :firehose-filters update sid (fnil conj []) compiled-filter)
           (as-> subs' s
-            (reduce #(assoc-in %1 [:author->filters %2 sid] compiled-filter) s authors)
-            (reduce #(assoc-in %1 [:p#->filters %2 sid] compiled-filter) s p#)
-            (reduce #(assoc-in %1 [:id->filters %2 sid] compiled-filter) s ids)
-            (reduce #(assoc-in %1 [:e#->filters %2 sid] compiled-filter) s e#)))))
+            (reduce #(update-in %1 [:author->filters %2 sid] (fnil conj []) compiled-filter) s authors)
+            (reduce #(update-in %1 [:p#->filters %2 sid] (fnil conj []) compiled-filter) s p#)
+            (reduce #(update-in %1 [:id->filters %2 sid] (fnil conj []) compiled-filter) s ids)
+            (reduce #(update-in %1 [:e#->filters %2 sid] (fnil conj []) compiled-filter) s e#)))))
     (update-in subs [:channel-id->sids channel-id] (fnil conj #{}) sid)
     filters))
 

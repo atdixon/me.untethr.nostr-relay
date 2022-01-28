@@ -9,7 +9,7 @@
     <appender name="FILE"
               class="ch.qos.logback.core.rolling.RollingFileAppender">
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <fileNamePattern>nostr-relay-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <fileNamePattern>logs/nostr-relay-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
             <totalSizeCap>5GB</totalSizeCap>
         </rollingPolicy>
@@ -21,7 +21,7 @@
         </encoder>
     </appender>
 
-    <root level="debug">
+    <root level="info">
         <appender-ref ref="STDOUT"/>
         <appender-ref ref="FILE"/>
     </root>

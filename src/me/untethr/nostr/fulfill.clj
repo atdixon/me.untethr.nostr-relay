@@ -16,7 +16,7 @@
 
 (defn create-pool
   ^ExecutorService []
-  (Executors/newFixedThreadPool 500
+  (Executors/newFixedThreadPool 50
     (reify ThreadFactory
       (newThread [_this r]
         (doto (Thread. ^Runnable r)

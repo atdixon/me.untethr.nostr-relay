@@ -8,7 +8,7 @@ test:
 
 .PHONY: run
 run:
-	clj -M -m me.untethr.nostr.app
+	clj -J-Dlogback.configurationFile=conf/logback.xml -M -m me.untethr.nostr.app
 
 .PHONY: uberjar
 uberjar:
@@ -16,4 +16,10 @@ uberjar:
 
 .PHONY: run-uberjar
 run-uberjar:
-	java -cp target/go-social.jar clojure.main -m me.untethr.nostr.app
+	java -Dlogback.configurationFile=conf/logback.xml \
+		-cp target/me.untethr.nostr-relay.jar \
+		clojure.main -m me.untethr.nostr.app
+
+.PHONY: deploy-archive
+deploy-archive:
+	tar -czvf target/me.untethr.nostr-relay.tar.gz conf/* -C target me.untethr.nostr-relay.jar
