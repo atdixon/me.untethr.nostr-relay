@@ -4,6 +4,6 @@
   "pubkey": "<your-pubkey-here>",
   "contact": "<your-contact-here>",
   "supported_nips": [1, 2, 4, 11],
-  "software": "<todo>",
+  "software": "https://github.com/atdixon/me.untethr.nostr-relay",
   "version": "<todo>"
 }

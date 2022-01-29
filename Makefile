@@ -21,5 +21,5 @@ run-uberjar:
 		clojure.main -m me.untethr.nostr.app
 
 .PHONY: deploy-archive
-deploy-archive:
+deploy-archive: clean uberjar
 	tar -czvf target/me.untethr.nostr-relay.tar.gz conf/* -C target me.untethr.nostr-relay.jar

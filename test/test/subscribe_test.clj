@@ -208,4 +208,6 @@
       (subscribe/subscribe! subs-atom "scope-0" "main-channel"
         req-filters #(swap! result-atom (fnil conj []) %))
       (subscribe/notify! metrics-fake subs-atom evt raw-evt)
-      (is (= @result-atom [raw-evt])))))
+      (is (= @result-atom [raw-evt]))
+      (is (= 1 (subscribe/num-subscriptions subs-atom)))
+      (is (= 3 (subscribe/num-filters subs-atom "scope-0"))))))
