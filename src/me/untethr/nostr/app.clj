@@ -94,7 +94,7 @@
   [message]
   (write-str* ["NOTICE" message]))
 
-(def max-filters 6)
+(def max-filters 10)
 
 (defn- receive-req
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
@@ -106,14 +106,16 @@
       (subscribe/unsubscribe! subs-atom channel-id req-id)
       (when-not (validation/filters-empty? req-filters)
         (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
-          (hk/send! ch
-            (create-notice-message
-              (format
-                (str
-                  "Too many subscription filters."
-                  " Max allowed is %d, but you have %d.")
-                max-filters
-                (subscribe/num-filters subs-atom channel-id))))
+          (do
+            (metrics/inc-excessive-filters! metrics)
+            (hk/send! ch
+              (create-notice-message
+                (format
+                  (str
+                    "Too many subscription filters."
+                    " Max allowed is %d, but you have %d.")
+                  max-filters
+                  (subscribe/num-filters subs-atom channel-id)))))
           (do
             ;; subscribe first so we are guaranteed to dispatch new arrivals
             (metrics/time-subscribe! metrics

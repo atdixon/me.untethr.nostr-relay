@@ -25,6 +25,7 @@
    ^Timer subscribe-timer
    ^Timer unsubscribe-timer
    ^Timer unsubscribe-all-timer
+   ^Counter subscribe-excessive-filters-counter
    ^Timer fulfillment-timer
    ^Histogram fulfillment-num-rows
    ^Counter fulfillment-interrupt
@@ -65,6 +66,7 @@
        (timer codahale ["app" "event" "subscribe"])
        (timer codahale ["app" "event" "unsubscribe"])
        (timer codahale ["app" "event" "unsubscribe-all"])
+       (counter codahale ["app" "subscribe" "excessive-filter-count"])
        (timer codahale ["app" "subscribe" "fulfillment"])
        (histogram codahale ["app" "subscribe" "fulfillment-num-rows"])
        (meter codahale ["app" "subscribe" "fulfillment-interrupt"])
@@ -116,6 +118,10 @@
 (defmacro time-unsubscribe-all!
   [metrics & body]
   `(time! (:unsubscribe-all-timer ~metrics) ~@body))
+
+(defn inc-excessive-filters!
+  [metrics]
+  (inc! (:subscribe-excessive-filters-counter metrics)))
 
 (defmacro time-fulfillment!
   [metrics & body]
