@@ -1,8 +1,8 @@
 (ns me.untethr.nostr.store
-  (:require [next.jdbc :as jdbc]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]))
 
 (def get-datasource*

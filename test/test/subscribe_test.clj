@@ -8,6 +8,7 @@
             [me.untethr.nostr.app :as app]
             [me.untethr.nostr.subscribe :as subscribe]
             [me.untethr.nostr.metrics :as metrics]
+            [test.support :as support]
             [test.test-data :as test-data])
   (:import (java.util List)))
 
@@ -195,19 +196,30 @@
       (is (:pass? res) (pr-str res)))))
 
 (deftest regression-test
-  (with-open [data-src (io/reader
-                         (io/resource "test/regression-data.txt"))]
+  (support/with-regression-data [data-vec]
+    ;; regression 0
     (let [metrics-fake (metrics/create-metrics)
           subs-atom (atom (subscribe/create-empty-subs))
-          data (line-seq data-src)
-          [_req req-id & req-filters] (#'app/parse (nth data 0))
-          raw-evt (nth data 1)
+          [_req req-id & req-filters] (#'app/parse (nth data-vec 0))
+          raw-evt (nth data-vec 1)
           [_ evt] (#'app/parse raw-evt)
           result-atom (atom nil)]
-      ;; regression 0
       (subscribe/subscribe! subs-atom "scope-0" "main-channel"
         req-filters #(swap! result-atom (fnil conj []) %))
       (subscribe/notify! metrics-fake subs-atom evt raw-evt)
       (is (= @result-atom [raw-evt]))
       (is (= 1 (subscribe/num-subscriptions subs-atom)))
-      (is (= 3 (subscribe/num-filters subs-atom "scope-0"))))))
+      (is (= 3 (subscribe/num-filters subs-atom "scope-0"))))
+    ;; regression 1
+    (let [metrics-fake (metrics/create-metrics)
+          subs-atom (atom (subscribe/create-empty-subs))
+          [_req req-id & req-filters] (#'app/parse (nth data-vec 2))
+          raw-evt (nth data-vec 3)
+          [_ evt] (#'app/parse raw-evt)
+          result-atom (atom nil)]
+      (subscribe/subscribe! subs-atom "scope-0" "main-channel"
+        req-filters #(swap! result-atom (fnil conj []) %))
+      (subscribe/notify! metrics-fake subs-atom evt raw-evt)
+      (is (= @result-atom [raw-evt]))
+      (is (= 1 (subscribe/num-subscriptions subs-atom)))
+      (is (= 1 (subscribe/num-filters subs-atom "scope-0"))))))

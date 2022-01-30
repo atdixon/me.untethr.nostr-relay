@@ -4,6 +4,7 @@
   (:require
     [me.untethr.nostr.metrics :as metrics]
     [me.untethr.nostr.util :as util]
+    [me.untethr.nostr.validation :as validation]
     [clojure.tools.logging :as log])
   (:import (com.google.common.collect Sets)
            (java.util Set Collection)))
@@ -139,7 +140,7 @@
   "Does not wipe out prior subscription with same req-id; upstream is expected
    to unsubscribe! priors before subscribe!."
   [subs-atom channel-id req-id filters observer]
-  {:pre [(not-empty filters)]}
+  {:pre [(not (validation/filters-empty? filters))]}
   (let [sid (str channel-id ":" req-id)]
     (swap! subs-atom #(subscribe!* % channel-id sid filters observer))))
 

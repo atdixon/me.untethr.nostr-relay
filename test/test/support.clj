@@ -3,7 +3,8 @@
             [next.jdbc :as jdbc]
             [me.untethr.nostr.store :as store]
             [me.untethr.nostr.app :as app]
-            [me.untethr.nostr.metrics :as metrics]))
+            [me.untethr.nostr.metrics :as metrics]
+            [clojure.java.io :as io]))
 
 (defmacro with-memory-db
   [bindings & body]
@@ -17,3 +18,11 @@
   (let [m (metrics/create-metrics)]
     (doseq [o parsed-events]
       (#'app/store-event! m db o (#'app/write-str* o)))))
+
+(defmacro with-regression-data
+  [bindings & body]
+  `(with-open [data-src# (io/reader
+                           (io/resource "test/regression-data.txt"))]
+     (let [data-vec# (vec (line-seq data-src#))
+           ~bindings [data-vec#]]
+       ~@body)))
