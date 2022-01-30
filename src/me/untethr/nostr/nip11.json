@@ -1,9 +1,0 @@
-{
-  "name": "<your-name-here>",
-  "description": "If I had more time, I would have written a shorter letter.",
-  "pubkey": "<your-pubkey-here>",
-  "contact": "<your-contact-here>",
-  "supported_nips": [1, 2, 4, 11],
-  "software": "<todo>",
-  "version": "2022.0.1"
-}

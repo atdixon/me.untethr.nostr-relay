@@ -196,7 +196,7 @@
 
 (deftest regression-test
   (with-open [data-src (io/reader
-                         (io/resource "me/untethr/nostr/regression-data.txt"))]
+                         (io/resource "test/regression-data.txt"))]
     (let [metrics-fake (metrics/create-metrics)
           subs-atom (atom (subscribe/create-empty-subs))
           data (line-seq data-src)
@@ -204,7 +204,7 @@
           raw-evt (nth data 1)
           [_ evt] (#'app/parse raw-evt)
           result-atom (atom nil)]
-
+      ;; regression 0
       (subscribe/subscribe! subs-atom "scope-0" "main-channel"
         req-filters #(swap! result-atom (fnil conj []) %))
       (subscribe/notify! metrics-fake subs-atom evt raw-evt)
