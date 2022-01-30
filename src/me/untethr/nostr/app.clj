@@ -96,48 +96,59 @@
 
 (def max-filters 10)
 
+;; some clients may still send legacy filter format that permits singular id
+;; in filter; so we'll support this for a while.
+(defn- ^:deprecated interpret-legacy-filter
+  [f]
+  (cond-> f
+    (and
+      (contains? f :id)
+      (not (contains? f :ids)))
+    (-> (assoc :ids [(:id f)]) (dissoc :id))))
+
 (defn- receive-req
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
-  (if-let [err (validation/req-err req-id req-filters)]
-    (log/warn "invalid req" {:err err :req [req-id (vec req-filters)]})
-    (do
-      ;; just in case we're still fulfilling prior subscription w/ same req-id
-      (fulfill/cancel! fulfill-atom channel-id req-id)
-      (subscribe/unsubscribe! subs-atom channel-id req-id)
-      (when-not (validation/filters-empty? req-filters)
-        (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
-          (do
-            (metrics/inc-excessive-filters! metrics)
-            (hk/send! ch
-              (create-notice-message
-                (format
-                  (str
-                    "Too many subscription filters."
-                    " Max allowed is %d, but you have %d.")
-                  max-filters
-                  (subscribe/num-filters subs-atom channel-id)))))
-          (do
-            ;; subscribe first so we are guaranteed to dispatch new arrivals
-            (metrics/time-subscribe! metrics
-              (subscribe/subscribe! subs-atom channel-id req-id req-filters
-                (fn [raw-event]
-                  ;; "some" safety if we're notified and our channel has closed
-                  ;; but we've not yet unsubscribed in response; this isn't thread
-                  ;; safe so could still see channel close before the send!;
-                  ;; upstream observer invocation should catch and log.
-                  (when (hk/open? ch)
-                    (hk/send! ch (create-event-message req-id raw-event))))))
-            ;; after subscription, capture fulfillment target rowid; in rare cases we
-            ;; may double-deliver an event or few but we will never miss an event
-            (if-let [target-row-id (store/max-event-rowid db)]
-              (fulfill/submit! metrics db fulfill-atom channel-id req-id req-filters target-row-id
-                (fn [raw-event]
-                  ;; see note above; we may see channel close before we cancel
-                  ;; fulfillment
-                  (when (hk/open? ch)
-                    (hk/send! ch (create-event-message req-id raw-event)))))
-              ;; should only occur on epochal first event
-              (log/warn "no max rowid; nothing yet to fulfill"))))))))
+  (let [req-filters (mapv interpret-legacy-filter req-filters)]
+    (if-let [err (validation/req-err req-id req-filters)]
+      (log/warn "invalid req" {:err err :req [req-id (vec req-filters)]})
+      (do
+        ;; just in case we're still fulfilling prior subscription w/ same req-id
+        (fulfill/cancel! fulfill-atom channel-id req-id)
+        (subscribe/unsubscribe! subs-atom channel-id req-id)
+        (when-not (validation/filters-empty? req-filters)
+          (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
+            (do
+              (metrics/inc-excessive-filters! metrics)
+              (hk/send! ch
+                (create-notice-message
+                  (format
+                    (str
+                      "Too many subscription filters."
+                      " Max allowed is %d, but you have %d.")
+                    max-filters
+                    (subscribe/num-filters subs-atom channel-id)))))
+            (do
+              ;; subscribe first so we are guaranteed to dispatch new arrivals
+              (metrics/time-subscribe! metrics
+                (subscribe/subscribe! subs-atom channel-id req-id req-filters
+                  (fn [raw-event]
+                    ;; "some" safety if we're notified and our channel has closed
+                    ;; but we've not yet unsubscribed in response; this isn't thread
+                    ;; safe so could still see channel close before the send!;
+                    ;; upstream observer invocation should catch and log.
+                    (when (hk/open? ch)
+                      (hk/send! ch (create-event-message req-id raw-event))))))
+              ;; after subscription, capture fulfillment target rowid; in rare cases we
+              ;; may double-deliver an event or few but we will never miss an event
+              (if-let [target-row-id (store/max-event-rowid db)]
+                (fulfill/submit! metrics db fulfill-atom channel-id req-id req-filters target-row-id
+                  (fn [raw-event]
+                    ;; see note above; we may see channel close before we cancel
+                    ;; fulfillment
+                    (when (hk/open? ch)
+                      (hk/send! ch (create-event-message req-id raw-event)))))
+                ;; should only occur on epochal first event
+                (log/warn "no max rowid; nothing yet to fulfill")))))))))
 
 (defn- receive-close
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id]]
