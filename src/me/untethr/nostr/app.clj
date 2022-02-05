@@ -2,6 +2,7 @@
   (:require
     [clj-yaml.core :as yaml]
     [clojure.java.io :as io]
+    [clojure.pprint :as pprint]
     [clojure.string :as str]
     [clojure.tools.logging :as log]
     [jsonista.core :as json]
@@ -12,6 +13,7 @@
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.validation :as validation]
     [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs]
     [org.httpkit.server :as hk]
     [reitit.ring :as ring])
   (:import (java.nio.charset StandardCharsets)
@@ -206,6 +208,27 @@
     (and (nip11-request? req) nip11-json)
     (nip11-response nip11-json)))
 
+(defn- handler-q [db req]
+  (let [rows (jdbc/execute! db
+               ["select rowid, sys_ts, raw_event from n_events order by rowid desc limit 25"]
+               {:builder-fn rs/as-unqualified-lower-maps})
+        rows' (mapv
+                (fn [row]
+                  (let [parsed-event (-> row :raw_event parse)]
+                    (-> row
+                      (dissoc :raw_event)
+                      (merge
+                        (select-keys parsed-event [:kind :pubkey]))
+                      (assoc :content
+                             (str
+                               (subs (:content parsed-event) 0
+                                 (min 75 (dec (count (:content parsed-event))))) "..."))))) rows)]
+    {:status 200
+     :headers {"Content-Type" "text/plain"}
+     :body (with-out-str
+             (pprint/print-table
+               [:rowid :sys_ts :kind :pubkey :content] rows'))}))
+
 (defn- handler-metrics [metrics _req]
   {:status 200
    :headers {"Content-Type" "application/json"}
@@ -226,7 +249,8 @@
       [["/" {:get
              (partial handler nip11-json metrics db subs-atom fulfill-atom)}]
        ["/.well-known/nostr.json" {:get (partial handler-nip05 nip05-json)}]
-       ["/metrics" {:get (partial handler-metrics metrics)}]])))
+       ["/metrics" {:get (partial handler-metrics metrics)}]
+       ["/q" {:get (partial handler-q db)}]])))
 
 ;; --
 
