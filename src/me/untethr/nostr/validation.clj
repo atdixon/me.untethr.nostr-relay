@@ -35,7 +35,7 @@
     (not (every?* hex-str? e#)) :err/e#
     (not (every?* hex-str? p#)) :err/p#
     (not (or (nil? since) (timestamp? since))) :err/since
-    (not (or (nil? since) (timestamp? until))) :err/until
+    (not (or (nil? until) (timestamp? until))) :err/until
     (not (every?* hex-str? authors)) :err/authors))
 
 (defn req-err
