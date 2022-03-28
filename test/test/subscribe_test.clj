@@ -195,6 +195,19 @@
     (let [res (tc/quick-check 50 prop :seed seed)]
       (is (:pass? res) (pr-str res)))))
 
+(deftest firehose-test
+  (let [metrics-fake (metrics/create-metrics)
+        subs-atom (atom (subscribe/create-empty-subs))
+        result-atom (atom nil)]
+    (subscribe/subscribe! subs-atom "scope-0" "main-channel"
+      [{} {:ids ["abc"]}]
+      #(swap! result-atom (fnil conj []) %))
+    (subscribe/notify! metrics-fake subs-atom {:id "abc"} "<raw-evt>")
+    (is (= @result-atom ["<raw-evt>"]))
+    (is (= 1 (subscribe/num-subscriptions subs-atom)))
+    (is (= 1 (subscribe/num-firehose-filters subs-atom)))
+    (is (= 2 (subscribe/num-filters subs-atom "scope-0")))))
+
 (deftest regression-test
   (support/with-regression-data [data-vec]
     ;; regression 0
@@ -209,6 +222,7 @@
       (subscribe/notify! metrics-fake subs-atom evt raw-evt)
       (is (= @result-atom [raw-evt]))
       (is (= 1 (subscribe/num-subscriptions subs-atom)))
+      (is (= 0 (subscribe/num-firehose-filters subs-atom)))
       (is (= 3 (subscribe/num-filters subs-atom "scope-0"))))
     ;; regression 1
     (let [metrics-fake (metrics/create-metrics)
@@ -222,4 +236,5 @@
       (subscribe/notify! metrics-fake subs-atom evt raw-evt)
       (is (= @result-atom [raw-evt]))
       (is (= 1 (subscribe/num-subscriptions subs-atom)))
+      (is (= 0 (subscribe/num-firehose-filters subs-atom)))
       (is (= 1 (subscribe/num-filters subs-atom "scope-0"))))))

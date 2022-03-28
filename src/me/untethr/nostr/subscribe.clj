@@ -47,7 +47,8 @@
     (doseq [[tag-kind arg0] tags]
       (condp = tag-kind
         "e" (->> [:e#->filters arg0] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
-        "p" (->> [:p#->filters arg0] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))))
+        "p" (->> [:p#->filters arg0] (get-in subs-snapshot) vals flatten ^Collection (into []) (.addAll candidates))
+        :no-op))
     candidates))
 
 (defn notify!
