@@ -37,7 +37,7 @@
     (not (or (nil? since) (timestamp? since))) :err/since
     (not (or (nil? until) (timestamp? until))) :err/until
     (not (every?* hex-str? authors)) :err/authors
-    (not (or (nil? limit) (integer? limit))) :err/limit))
+    (not (or (nil? limit) (nat-int? limit))) :err/limit))
 
 (defn req-err
   [req-id req-filters]
