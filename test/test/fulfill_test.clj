@@ -12,15 +12,18 @@
     (support/load-data db (:pool test-data/pool-with-filters))
 
     (let [results-atom (atom [])
+          eose-atom (atom 0)
           fulfill-atom (atom (fulfill/create-empty-registry))
           ^Future f (fulfill/submit! (metrics/create-metrics)
                       db fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
                       (fn [res]
-                        (swap! results-atom conj res)))
-          ;; cause test to fail if lose the async work
+                        (swap! results-atom conj res))
+                      #(swap! eose-atom inc))
+          ;; cause test to swap! if inc the async work
           _ (.get f 1000 TimeUnit/MILLISECONDS)]
       (is (.isDone f))
       (is (= 4 (count @results-atom)))
+      (is (= 1 @eose-atom))
       ;; verify the results are json strings that can be parsed
       (is (= (into #{} (subvec (:pool test-data/pool-with-filters) 1 5))
             (into #{} (map #'app/parse) @results-atom)))
@@ -36,6 +39,7 @@
 
     (let [semaphore (Semaphore. 0)
           results-atom (atom [])
+          eose-atom (atom 0)
           fulfill-atom (atom (fulfill/create-empty-registry))
           ^Future f (fulfill/submit! (metrics/create-metrics)
                       db fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
@@ -43,12 +47,14 @@
                         ;; block so our cancellation is guaranteed to cancel
                         ;; us in media res
                         (.acquire semaphore)
-                        (swap! results-atom conj res)))]
+                        (swap! results-atom conj res))
+                      #(swap! eose-atom inc))]
       (Thread/sleep 100) ;; in most cases we want to exercise the true interruption path
       (cancel-fn fulfill-atom "chan-id" "req-id")
       (.release semaphore)
       (is (.isCancelled f))
       (is (= [] @results-atom))
+      (is (= 0 @eose-atom))
       ;; ensure cancellation leaves us with an empty registry
       (is (= (fulfill/create-empty-registry) @fulfill-atom)))))
 
