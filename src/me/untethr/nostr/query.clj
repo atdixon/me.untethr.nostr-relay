@@ -3,6 +3,7 @@
 
 (defn- filter->base*
   [ids kinds since until authors e# p#]
+  {:post [(vector? (second %))]}
   (reduce
     (fn [[acc-clause acc-params] [clause params]]
       [(if (nil? acc-clause)
@@ -31,17 +32,23 @@
 
 (defn filter->query
   "Note: no result ordering as of yet. Not req'd by nostr nips."
-  [{:keys [ids kinds since until authors] e# :#e p# :#p :as _filter}]
-  (let [[base-clause base-params] (filter->base* ids kinds since until authors e# p#)]
-    (cond
-      (and (not-empty e#) (not-empty p#))
-      (vec (cons (format "select v.rowid, v.raw_event from n_events v %s %s where %s" join-e join-p base-clause) base-params))
-      (not-empty e#)
-      (vec (cons (format "select v.rowid, v.raw_event from n_events v %s where %s" join-e base-clause) base-params))
-      (not-empty p#)
-      (vec (cons (format "select v.rowid, v.raw_event from n_events v %s where %s" join-p base-clause) base-params))
-      :else
-      (vec (cons (format "select v.rowid, v.raw_event from n_events v where %s" base-clause) base-params)))))
+  [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as _filter} target-row-id]
+  (let [[base-clause base-params] (filter->base* ids kinds since until authors e# p#)
+        q (cond
+            (and (not-empty e#) (not-empty p#))
+            (format "select v.rowid, v.raw_event from n_events v %s %s where %s" join-e join-p base-clause)
+            (not-empty e#)
+            (format "select v.rowid, v.raw_event from n_events v %s where %s" join-e base-clause)
+            (not-empty p#)
+            (format "select v.rowid, v.raw_event from n_events v %s where %s" join-p base-clause)
+            :else
+            (format "select v.rowid, v.raw_event from n_events v where %s" base-clause))
+        q (if (some? target-row-id) (str q " and v.rowid <= " target-row-id) q)
+        q (str q " and deleted_ = 0")]
+    (if (some? limit)
+      ;; note: can't do order by w/in union query unless you leverage sub-queries like so:
+      (apply vector (str "select * from (" q " order by v.created_at desc limit ?)") (conj base-params limit))
+      (apply vector q base-params))))
 
 (defn filters->query
   ([filters] (filters->query filters nil))
@@ -50,9 +57,6 @@
    (vec
      (reduce
        (fn [[q & p] [q+ & p+]]
-         (let [q+' (cond-> q+
-                     target-row-id (str " and v.rowid <= " target-row-id)
-                     true (str " and deleted_ = 0"))]
-           (cons (if (nil? q) q+' (str q " union " q+')) (concat p p+))))
+         (cons (if (nil? q) q+ (str q " union " q+)) (concat p p+)))
        [nil]
-       (map filter->query filters)))))
+       (map #(filter->query % target-row-id) filters)))))

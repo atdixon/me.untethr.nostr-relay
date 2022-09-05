@@ -28,7 +28,7 @@
   (or (nil? x) (and (vector? x) (every? pred x))))
 
 (defn filter-err
-  [{:keys [ids kinds since until authors] e# :#e p# :#p :as _filter}]
+  [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as _filter}]
   (cond
     (not (every?* hex-str? ids)) :err/ids
     (not (every?* kind? kinds)) :err/kinds
@@ -36,7 +36,8 @@
     (not (every?* hex-str? p#)) :err/p#
     (not (or (nil? since) (timestamp? since))) :err/since
     (not (or (nil? until) (timestamp? until))) :err/until
-    (not (every?* hex-str? authors)) :err/authors))
+    (not (every?* hex-str? authors)) :err/authors
+    (not (or (nil? limit) (integer? limit))) :err/limit))
 
 (defn req-err
   [req-id req-filters]
