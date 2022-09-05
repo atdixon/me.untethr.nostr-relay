@@ -93,6 +93,10 @@
   ;; careful here; we're stitching the json ourselves b/c we have the raw event
   (format "[\"EVENT\",%s,%s]" (write-str* req-id) raw-event))
 
+(defn- create-eose-message
+  [req-id]
+  (format "[\"EOSE\",%s]" (write-str* req-id)))
+
 (defn- create-notice-message
   [message]
   (write-str* ["NOTICE" message]))
@@ -149,7 +153,9 @@
                     ;; see note above; we may see channel close before we cancel
                     ;; fulfillment
                     (when (hk/open? ch)
-                      (hk/send! ch (create-event-message req-id raw-event)))))
+                      (hk/send! ch (create-event-message req-id raw-event))))
+                  (fn []
+                    (hk/send! ch (create-eose-message req-id))))
                 ;; should only occur on epochal first event
                 (log/warn "no max rowid; nothing yet to fulfill")))))))))
 

@@ -29,7 +29,7 @@
   (->Registry {} {}))
 
 (defn- do-fulfill
-  [metrics db channel-id req-id filters target-row-id observer]
+  [metrics db channel-id req-id filters target-row-id observer eose-callback]
   (try
     (let [tally (volatile! 0)]
       (metrics/time-fulfillment! metrics
@@ -41,7 +41,8 @@
                   (vswap! tally inc)
                   (observer (:raw_event %))))
           (fn [& _])
-          (jdbc/plan db (query/filters->query filters target-row-id))))
+          (jdbc/plan db (query/filters->query filters target-row-id)))
+        (eose-callback))
       (metrics/fulfillment-num-rows! metrics @tally))
     (catch InterruptedException _e
       (log/info "interrupted" {:channel-id channel-id :req-id req-id})
@@ -56,10 +57,10 @@
           (log/error e "unexpected" {:channel-id channel-id :req-id req-id}))))))
 
 (defn submit!
-  [metrics db fulfill-atom channel-id req-id filters target-row-id observer]
+  [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [sid (str channel-id ":" req-id)
         f (.submit global-pool
-            ^Runnable (partial do-fulfill metrics db channel-id req-id filters target-row-id observer))]
+            ^Runnable (partial do-fulfill metrics db channel-id req-id filters target-row-id observer eose-callback))]
     (try
       (swap! fulfill-atom
         (fn [registry]
