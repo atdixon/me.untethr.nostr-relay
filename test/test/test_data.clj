@@ -11,9 +11,12 @@
           {:id "105" :pubkey "cat" :created_at 150 :kind 1 :tags [["p" "bob"] ["p" "cat"]]}]
    :filters->results
    [[[{:ids ["100" "101"]}] ["100" "101"]]
+    [[{:ids ["100" "101"] :limit 1}] ["101"]]
     [[{:since 140}] ["104" "105"]]
+    [[{:since 140 :limit 1}] ["105"]]
     [[{:since 140 :until 140}] ["104"]]
     [[{:until 140}] ["100" "101" "102" "103" "104"]]
+    [[{:until 140 :limit 3}] ["102" "103" "104"]]
     [[{:ids ["100" "101"] :authors ["abe"]}] ["100"]]
     [[{:authors ["bob"] :#p ["abe"]}] ["103"]]
     [[{:authors ["bob"] :#p ["abe"] :#e ["100"]}] ["103"]]
@@ -24,7 +27,8 @@
        :#p ["abe" "bob" "cat"] :#e []}] ["105"]]
     [[{:#e ["102" "103"]}] []]
     ;; db union queries
-    [[{:ids ["100" "101"]} {:#e ["100"]} {:#e ["102" "103"]}] ["100" "101" "103" "104"]]]})
+    [[{:ids ["100" "101"]} {:#e ["100"]} {:#e ["102" "103"]}] ["100" "101" "103" "104"]]
+    [[{:ids ["100" "101"] :limit 1} {:ids ["102" "103" "104"] :limit 2}] ["101" "103" "104"]]]})
 
 (def filter-matches
   [;; we never expect empty filter but test the base case anyway
