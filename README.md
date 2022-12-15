@@ -21,7 +21,7 @@ Edit `./conf/relay.yaml` to change port, file, etc.
 
 ### Known Deployments
 
-* https://nostr-relay.untethr.me/
+* wss://nostr-relay.untethr.me
 
 ### How to Deploy
 
