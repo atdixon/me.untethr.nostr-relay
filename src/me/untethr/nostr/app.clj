@@ -142,7 +142,7 @@
           (subscribe/notify! metrics subs-atom e raw-event)))
       (handle-invalid-event! metrics ch e verified-event-or-err-map))))
 
-(def max-filters 10)
+(def max-filters 12)
 
 ;; some clients may still send legacy filter format that permits singular id
 ;; in filter; so we'll support this for a while.
@@ -258,7 +258,8 @@
 (defn- nip11-response
   [nip11-json]
   {:status 200
-   :headers {"Content-Type" "application/nostr+json"}
+   :headers {"Content-Type" "application/nostr+json"
+             "Access-Control-Allow-Origin" "*"}
    :body nip11-json})
 
 (def ^:private nostr-url "https://github.com/nostr-protocol/nostr")

@@ -10,9 +10,12 @@
             [me.untethr.nostr.util :as util])
   (:import (java.util.concurrent Executors ThreadFactory ExecutorService Future)))
 
+(defrecord FulfillHandle
+  [^Future fut cancelled?-vol])
+
 (defrecord Registry
   [channel-id->sids
-   sid->future])
+   sid->future-handle])
 
 (defn create-pool
   ^ExecutorService []
@@ -29,7 +32,7 @@
   (->Registry {} {}))
 
 (defn- do-fulfill
-  [metrics db channel-id req-id filters target-row-id observer eose-callback]
+  [metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback]
   (try
     (let [tally (volatile! 0)]
       (metrics/time-fulfillment! metrics
@@ -37,30 +40,27 @@
         (transduce
           ;; note: if observer throws exception we catch below and for
           ;; now call it unexpected
-          (map #(do
+          (map #(when-not @cancelled?-vol
                   (vswap! tally inc)
                   (observer (:raw_event %))))
-          (fn [& _])
-          (jdbc/plan db (query/filters->query filters target-row-id)))
-        (eose-callback))
-      (metrics/fulfillment-num-rows! metrics @tally))
-    (catch InterruptedException _e
-      (log/info "interrupted" {:channel-id channel-id :req-id req-id})
-      (metrics/mark-fulfillment-interrupt! metrics))
+          (fn [& _]
+            (when @cancelled?-vol
+              (metrics/mark-fulfillment-interrupt! metrics)
+              (reduced :cancelled)))
+          (jdbc/plan db (query/filters->query filters target-row-id))))
+      (when-not @cancelled?-vol
+        (eose-callback)
+        (metrics/fulfillment-num-rows! metrics @tally)))
     (catch Exception e
-      (if (.isInterrupted (Thread/currentThread))
-        (do
-          (metrics/mark-fulfillment-interrupt! metrics)
-          (log/warn "interrupted" {:channel-id channel-id :req-id req-id :symptom (ex-message e)}))
-        (do
-          (metrics/mark-fulfillment-error! metrics)
-          (log/error e "unexpected" {:channel-id channel-id :req-id req-id}))))))
+      (metrics/mark-fulfillment-error! metrics)
+      (log/error e "unexpected" {:channel-id channel-id :req-id req-id}))))
 
 (defn submit!
   [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [sid (str channel-id ":" req-id)
+        cancelled?-vol (volatile! false)
         f (.submit global-pool
-            ^Runnable (partial do-fulfill metrics db channel-id req-id filters target-row-id observer eose-callback))]
+            ^Runnable (partial do-fulfill metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback))]
     (try
       (swap! fulfill-atom
         (fn [registry]
@@ -73,22 +73,24 @@
           ;; subscription is still alive.
           (-> registry
             (update-in [:channel-id->sids channel-id] (fnil conj #{}) sid)
-            (assoc-in [:sid->future sid] f))))
+            (assoc-in [:sid->future-handle sid] (->FulfillHandle f cancelled?-vol)))))
       f
       (catch Exception e
-        (.cancel f true)
+        (vreset! cancelled?-vol true)
+        (.cancel f false)
         (throw e)))))
 
 (defn- cancel!* [registry channel-id sid]
   (-> registry
     (update-in [:channel-id->sids channel-id] disj sid)
     (util/dissoc-in-if-empty [:channel-id->sids channel-id])
-    (update :sid->future dissoc sid)))
+    (update :sid->future-handle dissoc sid)))
 
 (defn- cancel-sid!
   [fulfill-atom channel-id sid]
-  (when-let [^Future f (get-in @fulfill-atom [:sid->future sid])]
-    (.cancel f true))
+  (when-let [{:keys [^Future fut cancelled?-vol]} (get-in @fulfill-atom [:sid->future-handle sid])]
+    (vreset! cancelled?-vol true)
+    (.cancel fut false))
   (swap! fulfill-atom #(cancel!* % channel-id sid)))
 
 (defn cancel!

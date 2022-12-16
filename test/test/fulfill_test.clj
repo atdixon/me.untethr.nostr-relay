@@ -35,7 +35,6 @@
   [cancel-fn]
   (support/with-memory-db [db]
     (support/load-data db (:pool test-data/pool-with-filters))
-
     (let [semaphore (Semaphore. 0)
           results-atom (atom [])
           eose-atom (atom 0)
@@ -52,7 +51,7 @@
       (cancel-fn fulfill-atom "chan-id" "req-id")
       (.release semaphore)
       (is (.isCancelled f))
-      (is (= [] @results-atom))
+      (is (= 1 (count @results-atom)))
       (is (= 0 @eose-atom))
       ;; ensure cancellation leaves us with an empty registry
       (is (= (fulfill/create-empty-registry) @fulfill-atom)))))
