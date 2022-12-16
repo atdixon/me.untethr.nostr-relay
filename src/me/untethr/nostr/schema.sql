@@ -68,3 +68,13 @@ create table if not exists p_tags
 --
 create index if not exists idx_tagged_pubkey on p_tags (tagged_pubkey);
 --
+create table if not exists x_tags
+(
+    source_event_id varchar(64)   not null,
+    generic_tag     varchar(1)    not null,
+    tagged_value    varchar(2056) not null,
+    unique (source_event_id, generic_tag, tagged_value)
+);
+--
+create index if not exists idx_tagged_value on x_tags (generic_tag, tagged_value);
+--

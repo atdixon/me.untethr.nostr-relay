@@ -1,6 +1,5 @@
 (ns test.subscribe-test
-  (:require [clojure.java.io :as io]
-            [clojure.test :refer :all]
+  (:require [clojure.test :refer :all]
             [clojure.test.check :as tc]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]

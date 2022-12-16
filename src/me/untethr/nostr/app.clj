@@ -5,9 +5,10 @@
     [clojure.pprint :as pprint]
     [clojure.string :as str]
     [clojure.tools.logging :as log]
-    [jsonista.core :as json]
+    [me.untethr.nostr.common :as common]
     [me.untethr.nostr.crypt :as crypt]
     [me.untethr.nostr.fulfill :as fulfill]
+    [me.untethr.nostr.json-facade :as json-facade]
     [me.untethr.nostr.metrics :as metrics]
     [me.untethr.nostr.store :as store]
     [me.untethr.nostr.subscribe :as subscribe]
@@ -20,19 +21,8 @@
            (java.util UUID)
            (java.io File)))
 
-(def json-mapper
-  (json/object-mapper
-    {:encode-key-fn name
-     :decode-key-fn keyword
-     :modules [(metrics/create-jackson-metrics-module)]}))
-
-(defn- parse
-  [payload]
-  (json/read-value payload json-mapper))
-
-(defn- write-str*
-  ^String [o]
-  (json/write-value-as-string o json-mapper))
+(def parse json-facade/parse)
+(def write-str* json-facade/write-str*)
 
 (defn- calc-event-id
   [{:keys [pubkey created_at kind tags content]}]
@@ -51,42 +41,15 @@
 
 (defn- as-verified-event
   [{:keys [id sig pubkey] :as e}]
-  (if-let [err (validation/event-err e)]
-    (log/warn "invalid event" {:err err :e e})
+  (if-let [err-key (validation/event-err e)]
+    {:event e :err "invalid event" :context (name err-key)}
     (let [calculated-id (calc-event-id e)]
       (if-not (= id calculated-id)
-        (log/warn "bad event id" {:e e :expected calculated-id})
+        {:event e :err "bad event id"}
         (if-not (verify pubkey id sig)
-          (log/warn "event did not verify" {:e e})
+          {:event e :err "event did not verify"}
           e)))))
 
-(defn- store-event!
-  [metrics db {:keys [id pubkey created_at kind tags] :as _e} raw-event]
-  ;; use a tx, for now; don't want to answer queries with events
-  ;; that don't fully exist. could denormalize or some other strat
-  ;; to avoid tx if needed
-  (jdbc/with-transaction [tx db]
-    (if-let [rowid (store/insert-event! tx id pubkey created_at kind raw-event)]
-      (do
-        (doseq [[tag-kind arg0] tags]
-          (condp = tag-kind
-            "e" (store/insert-e-tag! tx id arg0)
-            "p" (store/insert-p-tag! tx id arg0)
-            :no-op))
-        rowid)
-      (metrics/duplicate-event! metrics))))
-
-(defn- receive-event
-  [metrics db ch subs-atom [_ e] _raw-message]
-  (if-let [e (metrics/time-verify! metrics (as-verified-event e))]
-    ;; for now re-render raw event into json; could be faster by stealing it
-    ;; from raw message via state machine or regex instead of serializing again.
-    (let [raw-event (write-str* e)]
-      (metrics/time-store-event! metrics (store-event! metrics db e raw-event))
-      (metrics/time-notify-event! metrics (subscribe/notify! metrics subs-atom e raw-event)))
-    (do
-      (log/warn "dropping invalid/unverified event" {:e e})
-      (metrics/invalid-event! metrics))))
 
 (defn- create-event-message
   [req-id raw-event]
@@ -100,6 +63,84 @@
 (defn- create-notice-message
   [message]
   (write-str* ["NOTICE" message]))
+
+(defn- create-ok-message
+  [event-id bool-val message]
+  ;; @see https://github.com/nostr-protocol/nips/blob/master/20.md
+  (write-str* ["OK" event-id bool-val message]))
+
+(defn- handle-duplicate-event!
+  [metrics ch event ok-message-str]
+  (metrics/duplicate-event! metrics)
+  (hk/send! ch
+    (create-ok-message
+      (:id event)
+      true
+      (format "duplicate:%s" ok-message-str))))
+
+(defn- handle-duplicate-event!
+  [metrics ch event ok-message-str]
+  (metrics/duplicate-event! metrics)
+  (hk/send! ch
+    (create-ok-message
+      (:id event)
+      true
+      (format "duplicate:%s" ok-message-str))))
+
+(defn- handle-stored-event!
+  [metrics ch event ok-message-str]
+  (metrics/duplicate-event! metrics)
+  (hk/send! ch
+    (create-ok-message (:id event) true ok-message-str)))
+
+(defn- store-event!
+  [db {:keys [id pubkey created_at kind tags] :as _e} raw-event]
+  ;; use a tx, for now; don't want to answer queries with events
+  ;; that don't fully exist. could denormalize or some other strat
+  ;; to avoid tx if needed
+  (jdbc/with-transaction [tx db]
+    (if-let [rowid (store/insert-event! tx id pubkey created_at kind raw-event)]
+      (do
+        (doseq [[tag-kind arg0] tags]
+          (cond
+            (= tag-kind "e") (store/insert-e-tag! tx id arg0)
+            (= tag-kind "p") (store/insert-p-tag! tx id arg0)
+            (common/indexable-tag-str?* tag-kind) (store/insert-x-tag! tx id tag-kind arg0)
+            :else :no-op))
+        rowid)
+      :duplicate)))
+
+(defn- handle-invalid-event!
+  [metrics ch event err-map]
+  (log/debug "dropping invalid/unverified event" {:e event})
+  (metrics/invalid-event! metrics)
+  (let [event-id (:id event)]
+    (if (validation/is-valid-id-form? event-id)
+      (hk/send! ch
+        (create-ok-message
+          (:id event)
+          false
+          (format "invalid:%s%s" (:err err-map)
+            (if (:context err-map)
+              (str " (" (:context err-map) ")") ""))))
+      (hk/send! ch
+        (create-notice-message (str "Badly formed event id: " event-id))))))
+
+(defn- receive-event
+  [metrics db ch subs-atom [_ e] _raw-message]
+  (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event e))]
+    (if (identical? verified-event-or-err-map e)
+      ;; for now re-render raw event into json; could be faster by stealing it
+      ;; from raw message via state machine or regex instead of serializing again.
+      (let [raw-event (write-str* verified-event-or-err-map)
+            store-result (metrics/time-store-event! metrics
+                           (store-event! db verified-event-or-err-map raw-event))]
+        (if (identical? store-result :duplicate)
+          (handle-duplicate-event! metrics ch e "ok")
+          (handle-stored-event! metrics ch e "ok"))
+        (metrics/time-notify-event! metrics
+          (subscribe/notify! metrics subs-atom e raw-event)))
+      (handle-invalid-event! metrics ch e verified-event-or-err-map))))
 
 (def max-filters 10)
 
@@ -115,14 +156,15 @@
 
 (defn- receive-req
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
-  (let [req-filters (mapv interpret-legacy-filter req-filters)]
-    (if-let [err (validation/req-err req-id req-filters)]
-      (log/warn "invalid req" {:err err :req [req-id (vec req-filters)]})
+  (let [use-req-filters (mapv (comp validation/conform-filter-lenient
+                                interpret-legacy-filter) req-filters)]
+    (if-let [err (validation/req-err req-id use-req-filters)]
+      (log/warn "invalid req" {:err err :req [req-id (vec use-req-filters)]})
       (do
         ;; just in case we're still fulfilling prior subscription w/ same req-id
         (fulfill/cancel! fulfill-atom channel-id req-id)
         (subscribe/unsubscribe! subs-atom channel-id req-id)
-        (when-not (validation/filters-empty? req-filters)
+        (when-not (validation/filters-empty? use-req-filters)
           (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
             (do
               (metrics/inc-excessive-filters! metrics)
@@ -137,9 +179,9 @@
             (do
               ;; subscribe first so we are guaranteed to dispatch new arrivals
               (metrics/time-subscribe! metrics
-                (subscribe/subscribe! subs-atom channel-id req-id req-filters
+                (subscribe/subscribe! subs-atom channel-id req-id use-req-filters
                   (fn [raw-event]
-                    ;; "some" safety if we're notified and our channel has closed
+                    ;; "some" safety if we're notified and our channel has closed,
                     ;; but we've not yet unsubscribed in response; this isn't thread
                     ;; safe so could still see channel close before the send!;
                     ;; upstream observer invocation should catch and log.
@@ -148,7 +190,7 @@
               ;; after subscription, capture fulfillment target rowid; in rare cases we
               ;; may double-deliver an event or few but we will never miss an event
               (if-let [target-row-id (store/max-event-rowid db)]
-                (fulfill/submit! metrics db fulfill-atom channel-id req-id req-filters target-row-id
+                (fulfill/submit! metrics db fulfill-atom channel-id req-id use-req-filters target-row-id
                   (fn [raw-event]
                     ;; see note above; we may see channel close before we cancel
                     ;; fulfillment
@@ -167,17 +209,33 @@
           (subscribe/unsubscribe! subs-atom channel-id req-id))
         (fulfill/cancel! fulfill-atom channel-id req-id))))
 
+(defn- parse-raw-message*
+  [raw-message]
+  (try
+    (parse raw-message)
+    (catch Exception e
+      e)))
+
+(defn- handle-problem-message!
+  [metrics ch raw-message notice-message-str]
+  (log/debug "dropping problem message" {:raw-message raw-message})
+  (metrics/problem-message! metrics)
+  (hk/send! ch
+    (create-notice-message notice-message-str)))
+
 (defn- ws-receive
   [metrics db subs-atom fulfill-atom {:keys [uuid] :as _websocket-state} ch raw-message]
   ;; note: exceptions are caught, logged, and swallowed by http-kit
-  (let [parsed-message (parse raw-message)]
-    (if (and (vector? parsed-message) (not-empty parsed-message))
-      (condp = (nth parsed-message 0)
-        "EVENT" (receive-event metrics db ch subs-atom parsed-message raw-message)
-        "REQ" (receive-req metrics db subs-atom fulfill-atom uuid ch parsed-message)
-        "CLOSE" (receive-close metrics db subs-atom fulfill-atom uuid ch parsed-message)
-        (log/warn "dropping" parsed-message))
-      (throw (ex-info "bad obj" {:type (type parsed-message)})))))
+  (let [parsed-message-or-exc (parse-raw-message* raw-message)]
+    (if (instance? Exception parsed-message-or-exc)
+      (handle-problem-message! metrics ch raw-message (str "Parse failure on: " raw-message))
+      (if (and (vector? parsed-message-or-exc) (not-empty parsed-message-or-exc))
+        (condp = (nth parsed-message-or-exc 0)
+          "EVENT" (receive-event metrics db ch subs-atom parsed-message-or-exc raw-message)
+          "REQ" (receive-req metrics db subs-atom fulfill-atom uuid ch parsed-message-or-exc)
+          "CLOSE" (receive-close metrics db subs-atom fulfill-atom uuid ch parsed-message-or-exc)
+          (handle-problem-message! metrics ch raw-message (str "Unknown message type: " (nth parsed-message-or-exc 0))))
+        (handle-problem-message! metrics ch raw-message (str "Expected a JSON array: " raw-message))))))
 
 (defn- ws-open
   [metrics db subs-atom fulfill-atom {:keys [uuid] :as _websocket-state} ch]
@@ -229,7 +287,7 @@
                       (assoc :content
                              (str
                                (subs (:content parsed-event) 0
-                                 (min 75 (dec (count (:content parsed-event))))) "..."))))) rows)]
+                                 (max 0 (min 75 (dec (count (:content parsed-event)))))) "..."))))) rows)]
     {:status 200
      :headers {"Content-Type" "text/plain"}
      :body (with-out-str
@@ -290,9 +348,7 @@
       (doto (slurp f)
         ;; we keep json exactly as-is but send it through
         ;; read-write here simply as validation
-        (->
-          (json/read-value json-mapper)
-          (json/write-value-as-string json-mapper))))))
+        (-> parse write-str*)))))
 
 (defn- parse-config
   []

@@ -5,12 +5,15 @@
     [me.untethr.nostr.metrics :as metrics]
     [me.untethr.nostr.util :as util]
     [me.untethr.nostr.validation :as validation]
-    [clojure.tools.logging :as log])
+    [clojure.tools.logging :as log]
+    [me.untethr.nostr.common :as common]
+    [clojure.set :as set])
   (:import (com.google.common.collect Sets)
            (java.util Set Collection)))
 
 (defrecord CompiledFilter
-  [sid ids kinds e# p# authors since until observer])
+  ;; all-tags will be a map as in {"a" ["foo" "bar"] "p" ["..."] ...}
+  [sid ids kinds all-tags authors since until observer])
 
 (defrecord Subs
   [channel-id->sids
@@ -27,11 +30,22 @@
 
 (defn- compiled-filter-matches?
   [compiled-filter id pubkey created_at kind tags]
-  ;; CONSIDER: compiling efficient matches? as part of compiled filter
-  ;; CONSIDER: splitting tag types upstream so we don't do two iters here
   (and
-    (or (nil? (:e# compiled-filter)) (some (fn [[_ arg0]] (contains? (:e# compiled-filter) arg0)) (filter #(= "e" (nth % 0)) tags)))
-    (or (nil? (:p# compiled-filter)) (some (fn [[_ arg0]] (contains? (:p# compiled-filter) arg0)) (filter #(= "p" (nth % 0)) tags)))
+    (let [all-tags-filter (:all-tags compiled-filter)]
+      (or (nil? all-tags-filter)
+        (let [indexed-tags
+              (reduce
+                (fn [acc [tag-name tag-val]]
+                  (update acc tag-name (fnil conj #{}) tag-val))
+                {}
+                tags)]
+          (every?
+            (fn [[filter-tag-name filter-tag-vals]]
+              (and (contains? indexed-tags filter-tag-name)
+                (not
+                  (empty?
+                    (set/intersection filter-tag-vals (get indexed-tags filter-tag-name))))))
+            all-tags-filter))))
     (or (nil? (:ids compiled-filter)) (contains? (:ids compiled-filter) id))
     (or (nil? (:kinds compiled-filter)) (contains? (:kinds compiled-filter) kind))
     (or (nil? (:authors compiled-filter)) (contains? (:authors compiled-filter) pubkey))
@@ -70,16 +84,20 @@
           (log/warn e "failed to notify observer; swallowing" {:sid (:sid candidate)}))))))
 
 (defn- compile-filter
-  [sid filter observer]
+  [sid raw-filter observer]
   (->CompiledFilter
     sid
-    (some-> filter :ids not-empty set)
-    (some-> filter :kinds not-empty set)
-    (some-> filter :#e not-empty set)
-    (some-> filter :#p not-empty set)
-    (some-> filter :authors not-empty set)
-    (some-> filter :since)
-    (some-> filter :until)
+    (some-> raw-filter :ids not-empty set)
+    (some-> raw-filter :kinds not-empty set)
+    (as-> raw-filter x
+      (select-keys x common/allowed-filter-tag-queries-set)
+      (filter (comp not-empty second) x)
+      (map (fn [[k v]] [(subs (name k) 1) (set v)]) x)
+      (into {} x)
+      (not-empty x))
+    (some-> raw-filter :authors not-empty set)
+    (some-> raw-filter :since)
+    (some-> raw-filter :until)
     observer))
 
 (defn- subscribe!*

@@ -20,6 +20,7 @@
    ^Timer store-event-timer
    ^Timer notify-event-timer
    ^Histogram notify-num-candidates
+   ^Meter problem-message
    ^Meter invalid-event
    ^Meter duplicate-event
    ^Timer subscribe-timer
@@ -61,6 +62,7 @@
        (timer codahale ["app" "event" "store"])
        (timer codahale ["app" "event" "notify"])
        (histogram codahale ["app" "subscribe" "notify-num-candidates"])
+       (meter codahale ["app" "message" "problem"])
        (meter codahale ["app" "event" "invalid"])
        (meter codahale ["app" "event" "duplicate"])
        (timer codahale ["app" "event" "subscribe"])
@@ -90,6 +92,10 @@
 (defn invalid-event!
   [metrics]
   (mark! (:invalid-event metrics)))
+
+(defn problem-message!
+  [metrics]
+  (mark! (:problem-message metrics)))
 
 (defmacro time-verify!
   [metrics & body]

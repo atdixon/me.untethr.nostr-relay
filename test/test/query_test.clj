@@ -35,9 +35,8 @@
 (deftest regression-test
   (support/with-regression-data [data-vec]
     (support/with-memory-db [db]
-      (let [fake-metrics (metrics/create-metrics)
-            [_req req-id & req-filters] (#'app/parse (nth data-vec 2))
+      (let [[_req req-id & req-filters] (#'app/parse (nth data-vec 2))
             raw-evt (nth data-vec 3)
             [_ evt] (#'app/parse raw-evt)]
-        (#'app/store-event! fake-metrics db evt raw-evt)
+        (#'app/store-event! db evt raw-evt)
         (= 1 (query* db req-filters))))))

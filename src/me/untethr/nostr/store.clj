@@ -76,3 +76,20 @@
        " (source_event_id, tagged_pubkey)"
        " values (?, ?)")
      source-event-id tagged-pubkey]))
+
+(defn insert-x-tag!
+  [db source-event-id generic-tag tagged-value]
+  (jdbc/execute-one! db
+    [(str
+       "insert or ignore into x_tags"
+       " (source_event_id, generic_tag, tagged_value)"
+       " values (?, ?, ?)")
+     ;; Note: we arbitrarily limit generic tags to 2056 characters, and
+     ;; we'll query with the same restriction. That is, any values that
+     ;; exceed 2056 characters will match any query value that exceeds
+     ;; 2056 characters whenever their first 2056 characters match.
+     source-event-id
+     generic-tag
+     (if (> (count tagged-value) 2056)
+       (subs tagged-value 0 2056)
+       tagged-value)]))

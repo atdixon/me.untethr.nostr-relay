@@ -3,6 +3,7 @@
             [next.jdbc :as jdbc]
             [me.untethr.nostr.store :as store]
             [me.untethr.nostr.app :as app]
+            [me.untethr.nostr.json-facade :as json-facade]
             [me.untethr.nostr.metrics :as metrics]
             [clojure.java.io :as io]))
 
@@ -15,9 +16,8 @@
 
 (defn load-data
   [db parsed-events]
-  (let [m (metrics/create-metrics)]
-    (doseq [o parsed-events]
-      (#'app/store-event! m db o (#'app/write-str* o)))))
+  (doseq [o parsed-events]
+    (#'app/store-event! db o (#'json-facade/write-str* o))))
 
 (defmacro with-regression-data
   [bindings & body]

@@ -10,7 +10,6 @@
 (deftest fulfill-test
   (support/with-memory-db [db]
     (support/load-data db (:pool test-data/pool-with-filters))
-
     (let [results-atom (atom [])
           eose-atom (atom 0)
           fulfill-atom (atom (fulfill/create-empty-registry))
