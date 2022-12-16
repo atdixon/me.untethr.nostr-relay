@@ -261,7 +261,10 @@
    :headers {"Content-Type" "application/nostr+json"}
    :body nip11-json})
 
-(defn- handler [nip11-json metrics db subs-atom fulfill-atom req]
+(def ^:private nostr-url "https://github.com/nostr-protocol/nostr")
+(def ^:private untethr-url "https://github.com/atdixon/me.untethr.nostr-relay")
+
+(defn- handler [maybe-server-hostname nip11-json metrics db subs-atom fulfill-atom req]
   ;; req contains :remote-addr, :headers {}, ...
   (cond
     (:websocket? req)
@@ -271,7 +274,20 @@
          :on-receive (partial ws-receive metrics db subs-atom fulfill-atom websocket-state)
          :on-close (partial ws-close metrics db subs-atom fulfill-atom websocket-state)}))
     (and (nip11-request? req) nip11-json)
-    (nip11-response nip11-json)))
+    (nip11-response nip11-json)
+    (not (str/blank? maybe-server-hostname))
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (format
+             (str
+               "<body>"
+               "<p>Hello!"
+               "<p>I am a fast <a target=\"_blank\" href=\"%s\">nostr</a> relay"
+               " of <a target=\"_blank\" href=\"%s\">this flavor</a>."
+               "<p>Add me to your nostr client using: <pre>wss://%s</pre>"
+               "<p>Or, get to know me better: <pre>curl -H 'Accept: application/nostr+json' https://%s</pre>"
+               "</body>")
+             nostr-url untethr-url maybe-server-hostname maybe-server-hostname)}))
 
 (defn- handler-q [db req]
   (let [rows (jdbc/execute! db
@@ -308,11 +324,11 @@
 
 ;; --
 
-(defn- ring-handler [nip05-json nip11-json metrics db subs-atom fulfill-atom]
+(defn- ring-handler [maybe-server-hostname nip05-json nip11-json metrics db subs-atom fulfill-atom]
   (ring/ring-handler
     (ring/router
       [["/" {:get
-             (partial handler nip11-json metrics db subs-atom fulfill-atom)}]
+             (partial handler maybe-server-hostname nip11-json metrics db subs-atom fulfill-atom)}]
        ["/.well-known/nostr.json" {:get (partial handler-nip05 nip05-json)}]
        ["/metrics" {:get (partial handler-metrics metrics)}]
        ["/q" {:get (partial handler-q db)}]])))
@@ -327,7 +343,7 @@
 ;; ?: simple auth for metrics?
 
 (defn go!
-  [db-path server-port nip05-json nip11-json]
+  [db-path maybe-server-hostname server-port nip05-json nip11-json]
   (let [db (store/init! db-path)
         subs-atom (atom (subscribe/create-empty-subs))
         fulfill-atom (atom (fulfill/create-empty-registry))
@@ -336,7 +352,7 @@
                   #(subscribe/num-subscriptions subs-atom)
                   #(subscribe/num-firehose-filters subs-atom))]
     (hk/run-server
-      (ring-handler nip05-json nip11-json metrics db subs-atom fulfill-atom)
+      (ring-handler maybe-server-hostname nip05-json nip11-json metrics db subs-atom fulfill-atom)
       {:port server-port :max-ws 4194304})
     (log/infof "server started on port %d; sleeping forever" server-port)
     (Thread/sleep Integer/MAX_VALUE)))
@@ -361,6 +377,7 @@
         nip11-json (slurp-json* "conf/nip11.json")]
     (go!
       (get-in conf [:sqlite :file])
+      (get-in conf [:hostname])
       (get-in conf [:http :port])
       nip05-json
       nip11-json)))

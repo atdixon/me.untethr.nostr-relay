@@ -1,3 +1,6 @@
+# Change this to your actual deploy host.
+hostname: "nostr-relay.untethr.me"
+
 http:
   port: 9090
 

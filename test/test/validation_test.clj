@@ -15,10 +15,11 @@
     (is (= {k []} (validation/conform-filter-lenient {k []}))))
   (doseq [k [:since :until :limit]]
     (is (= {k 0} (validation/conform-filter-lenient {k 0}))))
-  (is (= {:authors [validation/zero-hex-str]}
-        (validation/conform-filter-lenient {:authors ["bad"]})))
-  (is (= {:authors [validation/zero-hex-str validation/zero-hex-str]}
-        (validation/conform-filter-lenient {:authors ["bad" "bad"]})))
-  (is (= {:authors [validation/zero-hex-str fake-hex-str]}
-        (validation/conform-filter-lenient
-          {:authors ["bad" fake-hex-str]}))))
+  (doseq [k [:ids :authors]]
+    (is (= {k [validation/zero-hex-str]}
+          (validation/conform-filter-lenient {k ["bad"]})))
+    (is (= {k [validation/zero-hex-str validation/zero-hex-str]}
+          (validation/conform-filter-lenient {k ["bad" "bad"]})))
+    (is (= {k [validation/zero-hex-str fake-hex-str]}
+          (validation/conform-filter-lenient
+            {k ["bad" fake-hex-str]})))))
