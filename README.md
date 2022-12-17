@@ -62,6 +62,6 @@ I use ngnix + https://letsencrypt.org/ for SSL termination and
 [DDoS mitigation](https://www.nginx.com/blog/mitigating-ddos-attacks-with-nginx-and-nginx-plus/)
 and configure it to talk to the relay process on port `9090`.
 
-May wish to limit access to `/metrics` and `/q`, eg, 
+Totally optionally but you may wish to limit access to `/metrics` and `/q`, eg, 
 via 
 [basic auth](https://docs.nginx.com/nginx/admin-guide/security-controls/configuring-http-basic-authentication/).
