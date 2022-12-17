@@ -90,17 +90,26 @@
   [the-filter]
   ;; based on what we see from clients in the wild, we'll forgive some mistakes
   ;; in requests that we can argue won't change the result semantics:
-  ;; (1) we've seen non-hex authors and ids in queries; here we replace these with a
-  ;;     valid hex str that should have no real reference in our db. in this
-  ;;     way we'll do the right thing if there is one bad author ref in the
-  ;;     query (i.e., we'll return no results). if there are good author refs
-  ;;     in the query alongside bad, then we'll return matches if there are
+  ;; (1) we've seen non-hex authors, ids, #e and #p filters in queries; here
+  ;;     we replace these with a valid hex str that should have no real reference
+  ;;     in our db. in this way we'll do the right thing if there is one bad author
+  ;;     ref in the query (i.e., we'll return no results). if there are good author
+  ;;     refs in the query alongside bad, then we'll return matches if there are
   ;;     any for the good author refs
   (cond-> the-filter
     (not (empty? (:authors the-filter)))
     (update :authors #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
     (not (empty? (:ids the-filter)))
-    (update :ids #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))))
+    (update :ids #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (not (empty? (:#e the-filter)))
+    (update :#e #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (not (empty? (:#p the-filter)))
+    (update :#p #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    ;; (2) we've seen floats in the wild eg 1.671315671052E9
+    (not (nil? (:since the-filter)))
+    (update :since #(if (number? %) (int %) %))
+    (not (nil? (:until the-filter)))
+    (update :until #(if (number? %) (int %) %))))
 
 (defn close-err
   [req-id]
