@@ -10,6 +10,7 @@
     [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.json-facade :as json-facade]
     [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.query :as query]
     [me.untethr.nostr.store :as store]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.validation :as validation]
@@ -78,15 +79,6 @@
       true
       (format "duplicate:%s" ok-message-str))))
 
-(defn- handle-duplicate-event!
-  [metrics ch event ok-message-str]
-  (metrics/duplicate-event! metrics)
-  (hk/send! ch
-    (create-ok-message
-      (:id event)
-      true
-      (format "duplicate:%s" ok-message-str))))
-
 (defn- handle-stored-event!
   [metrics ch event ok-message-str]
   (metrics/duplicate-event! metrics)
@@ -142,7 +134,7 @@
           (subscribe/notify! metrics subs-atom e raw-event)))
       (handle-invalid-event! metrics ch e verified-event-or-err-map))))
 
-(def max-filters 12)
+(def max-filters 15)
 
 ;; some clients may still send legacy filter format that permits singular id
 ;; in filter; so we'll support this for a while.
@@ -154,52 +146,70 @@
       (not (contains? f :ids)))
     (-> (assoc :ids [(:id f)]) (dissoc :id))))
 
+(defn- prepare-req-filters*
+  [req-filters]
+  (->> req-filters
+    ;; conform...
+    (map (comp validation/conform-filter-lenient
+           interpret-legacy-filter))
+    ;; remove null filters (ie filters that could never match anything)...
+    (filter (complement validation/filter-has-empty-attr?))
+    ;; remove duplicates...
+    distinct
+    vec))
+
 (defn- receive-req
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
-  (let [use-req-filters (mapv (comp validation/conform-filter-lenient
-                                interpret-legacy-filter) req-filters)]
-    (if-let [err (validation/req-err req-id use-req-filters)]
-      (log/warn "invalid req" {:err err :req [req-id (vec use-req-filters)]})
-      (do
-        ;; just in case we're still fulfilling prior subscription w/ same req-id
-        (fulfill/cancel! fulfill-atom channel-id req-id)
-        (subscribe/unsubscribe! subs-atom channel-id req-id)
-        (when-not (validation/filters-empty? use-req-filters)
-          (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
-            (do
-              (metrics/inc-excessive-filters! metrics)
-              (hk/send! ch
-                (create-notice-message
-                  (format
-                    (str
-                      "Too many subscription filters."
-                      " Max allowed is %d, but you have %d.")
-                    max-filters
-                    (subscribe/num-filters subs-atom channel-id)))))
-            (do
-              ;; subscribe first so we are guaranteed to dispatch new arrivals
-              (metrics/time-subscribe! metrics
-                (subscribe/subscribe! subs-atom channel-id req-id use-req-filters
-                  (fn [raw-event]
-                    ;; "some" safety if we're notified and our channel has closed,
-                    ;; but we've not yet unsubscribed in response; this isn't thread
-                    ;; safe so could still see channel close before the send!;
-                    ;; upstream observer invocation should catch and log.
-                    (when (hk/open? ch)
-                      (hk/send! ch (create-event-message req-id raw-event))))))
-              ;; after subscription, capture fulfillment target rowid; in rare cases we
-              ;; may double-deliver an event or few but we will never miss an event
-              (if-let [target-row-id (store/max-event-rowid db)]
-                (fulfill/submit! metrics db fulfill-atom channel-id req-id use-req-filters target-row-id
-                  (fn [raw-event]
-                    ;; see note above; we may see channel close before we cancel
-                    ;; fulfillment
-                    (when (hk/open? ch)
-                      (hk/send! ch (create-event-message req-id raw-event))))
-                  (fn []
-                    (hk/send! ch (create-eose-message req-id))))
-                ;; should only occur on epochal first event
-                (log/warn "no max rowid; nothing yet to fulfill")))))))))
+  (if-not (every? map? req-filters)
+    (log/warn "invalid req" {:msg "expected objects"})
+    ;; else -- req has basic form...
+    (let [use-req-filters (prepare-req-filters* req-filters)
+          req-err (validation/req-err req-id use-req-filters)]
+      (if req-err
+        (log/warn "invalid req" {:req-err req-err :req [req-id use-req-filters]})
+        ;; else --
+        (do
+          ;; just in case we're still fulfilling prior subscription w/ same req-id
+          (fulfill/cancel! fulfill-atom channel-id req-id)
+          (subscribe/unsubscribe! subs-atom channel-id req-id)
+          ;; from here on, we'll completely ignore empty filters -- that is,
+          ;; filters that are empty after we've done our prepare step above.
+          (when-not (empty? use-req-filters)
+            (if (> (subscribe/num-filters subs-atom channel-id) max-filters)
+              (do
+                (metrics/inc-excessive-filters! metrics)
+                (hk/send! ch
+                  (create-notice-message
+                    (format
+                      (str
+                        "Too many subscription filters."
+                        " Max allowed is %d, but you have %d.")
+                      max-filters
+                      (subscribe/num-filters subs-atom channel-id)))))
+              (do
+                ;; subscribe first so we are guaranteed to dispatch new arrivals
+                (metrics/time-subscribe! metrics
+                  (subscribe/subscribe! subs-atom channel-id req-id use-req-filters
+                    (fn [raw-event]
+                      ;; "some" safety if we're notified and our channel has closed,
+                      ;; but we've not yet unsubscribed in response; this isn't thread
+                      ;; safe so could still see channel close before the send!;
+                      ;; upstream observer invocation should catch and log.
+                      (when (hk/open? ch)
+                        (hk/send! ch (create-event-message req-id raw-event))))))
+                ;; after subscription, capture fulfillment target rowid; in rare cases we
+                ;; may double-deliver an event or few but we will never miss an event
+                (if-let [target-row-id (store/max-event-rowid db)]
+                  (fulfill/submit! metrics db fulfill-atom channel-id req-id use-req-filters target-row-id
+                    (fn [raw-event]
+                      ;; see note above; we may see channel close before we cancel
+                      ;; fulfillment
+                      (when (hk/open? ch)
+                        (hk/send! ch (create-event-message req-id raw-event))))
+                    (fn []
+                      (hk/send! ch (create-eose-message req-id))))
+                  ;; should only occur on epochal first event
+                  (log/warn "no max rowid; nothing yet to fulfill"))))))))))
 
 (defn- receive-close
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id]]
@@ -291,25 +301,37 @@
              nostr-url untethr-url maybe-server-hostname maybe-server-hostname)}))
 
 (defn- handler-q [db req]
-  (let [rows (jdbc/execute! db
-               ["select rowid, sys_ts, raw_event from n_events order by rowid desc limit 25"]
-               {:builder-fn rs/as-unqualified-lower-maps})
-        rows' (mapv
-                (fn [row]
-                  (let [parsed-event (-> row :raw_event parse)]
-                    (-> row
-                      (dissoc :raw_event)
-                      (merge
-                        (select-keys parsed-event [:kind :pubkey]))
-                      (assoc :content
-                             (str
-                               (subs (:content parsed-event) 0
-                                 (max 0 (min 75 (dec (count (:content parsed-event)))))) "..."))))) rows)]
-    {:status 200
-     :headers {"Content-Type" "text/plain"}
-     :body (with-out-str
-             (pprint/print-table
-               [:rowid :sys_ts :kind :pubkey :content] rows'))}))
+  (let [parsed-body (or (some->> req :body slurp parse) [{}])
+        _ (when-not (and
+                      (every? map? parsed-body)
+                      (nil? (validation/req-err "http:q" parsed-body)))
+            (throw (ex-info "bad request" {:req req})))
+        prepared-filters (prepare-req-filters* parsed-body)
+        modified (mapv #(update % :limit (fn [a b] (min (or a b) 50)) 25) prepared-filters)
+        as-query (query/filters->query modified)]
+    (let [rows (jdbc/execute! db as-query
+                 {:builder-fn rs/as-unqualified-lower-maps})
+          rows' (mapv
+                  (fn [row]
+                    (let [parsed-event (-> row :raw_event parse)]
+                      (-> row
+                        (dissoc :raw_event)
+                        (merge
+                          (select-keys parsed-event [:kind :pubkey]))
+                        (assoc :content
+                               (let [max-summary-len 75
+                                     the-content (:content parsed-event)
+                                     the-content-len (count the-content)
+                                     needs-summary? (> the-content-len max-summary-len)
+                                     the-summary (if needs-summary?
+                                                   (subs the-content 0 max-summary-len) the-content)
+                                     suffix (if needs-summary? "..." "")]
+                                 (str the-summary suffix)))))) rows)]
+      {:status 200
+       :headers {"Content-Type" "text/plain"}
+       :body (with-out-str
+               (pprint/print-table
+                 [:rowid :sys_ts :kind :pubkey :content] rows'))})))
 
 (defn- handler-metrics [metrics _req]
   {:status 200

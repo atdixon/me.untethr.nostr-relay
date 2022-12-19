@@ -1,14 +1,10 @@
 (ns test.validation-test
   (:require
     [clojure.test :refer :all]
-    [me.untethr.nostr.validation :as validation]))
-
-(def ^:private hex-chars "abcdef0123456789")
-
-(def ^:private fake-hex-str (apply str (take 32 (cycle hex-chars))))
+    [me.untethr.nostr.validation :as validation]
+    [test.support :as support]))
 
 (deftest conform-filter-lenient-test
-  []
   (is (= {} (validation/conform-filter-lenient {})))
   ;ids kinds since until authors limit] e# :#e p# :#p
   (doseq [k [:ids :kinds :authors :#e :#p]]
@@ -24,6 +20,12 @@
           (validation/conform-filter-lenient {k ["bad"]})))
     (is (= {k [validation/zero-hex-str validation/zero-hex-str]}
           (validation/conform-filter-lenient {k ["bad" "bad"]})))
-    (is (= {k [validation/zero-hex-str fake-hex-str]}
+    (is (= {k [validation/zero-hex-str support/fake-hex-str]}
           (validation/conform-filter-lenient
-            {k ["bad" fake-hex-str]})))))
+            {k ["bad" support/fake-hex-str]})))))
+
+(deftest filter-has-empty-attr?-test
+  (is (not (validation/filter-has-empty-attr? {})))
+  (is (not (validation/filter-has-empty-attr? {:b ["x"] :a ["y"]})))
+  (is (validation/filter-has-empty-attr? {:a []}))
+  (is (validation/filter-has-empty-attr? {:b ["x"] :a []})))

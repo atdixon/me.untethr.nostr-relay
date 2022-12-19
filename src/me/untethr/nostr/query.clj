@@ -55,20 +55,34 @@
                         (not-empty e#) (conj join-e)
                         (not-empty p#) (conj join-p)
                         (not-empty generic-tags) (conj join-x)))
-        q (if (empty? join-clause)
+        q (cond
+            (empty? base-clause)
+            (format "select v.rowid, v.raw_event from n_events v" base-clause)
+            (empty? join-clause)
             (format "select v.rowid, v.raw_event from n_events v where %s" base-clause)
+            :else
             (format "select v.rowid, v.raw_event from n_events v %s where %s" join-clause base-clause))
         q (if (some? target-row-id) (str q " and v.rowid <= " target-row-id) q)
-        q (str q " and v.deleted_ = 0")]
+        q (format "%s %s deleted_ = 0" q (if (empty? base-clause) "where" "and"))
+        q (if (empty? join-clause) q (str q " group by v.rowid"))]
     (if (some? limit)
       ;; note: can't do order by w/in union query unless you leverage sub-queries like so:
       (apply vector (str "select * from (" q " order by v.created_at desc limit ?)") (conj base-params limit))
       (apply vector q base-params))))
 
 (defn filters->query
+  "Convert nostr filters to SQL query. Provided filters must be non-empty.
+   However, [{}] is supported and produces all values.
+
+   Callers that care about efficiency should provide a de-duplicated list
+   of filters; i.e., we won't do any de-duping here.
+
+   Filter attributes that are empty colls are ignored. So upstream callers that
+   want to return zero results in such cases are obligated to short-circuit
+   before invoking this function."
   ([filters] (filters->query filters nil))
   ([filters target-row-id]
-   {:pre [(or (nil? target-row-id) (number? target-row-id))]}
+   {:pre [(not-empty filters) (or (nil? target-row-id) (number? target-row-id))]}
    (vec
      (reduce
        (fn [[q & p] [q+ & p+]]

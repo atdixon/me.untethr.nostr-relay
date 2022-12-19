@@ -3,7 +3,6 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [me.untethr.nostr.app :as app]
-            [me.untethr.nostr.metrics :as metrics]
             [me.untethr.nostr.query :as query]
             [test.support :as support]
             [test.test-data :as test-data]))
@@ -22,10 +21,13 @@
 (deftest query-test
   (support/with-memory-db [db]
     (support/load-data db (:pool test-data/pool-with-filters))
-    (doseq [[filters results] (:filters->results test-data/pool-with-filters)]
-      (is (= (set results)
-            (into #{} (map (partial row-id->id db)) (query* db filters)))
-        (pr-str [filters results])))
+    (doseq [[filters expected-results] (:filters->results test-data/pool-with-filters)
+            :let [query-results (query* db filters)]]
+      (is (= (set expected-results)
+            (into #{} (map (partial row-id->id db)) query-results))
+        (pr-str [filters expected-results]))
+      (is (= (count expected-results) (count query-results))
+        (pr-str [filters query-results])))
     ;; with the well-known data set, let's test some w/ target-row-id..
     (is (= #{1 2 4} (-> (query* db
                           [{:ids ["100" "101"]}

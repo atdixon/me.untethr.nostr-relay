@@ -12,10 +12,14 @@
           {:id "106" :pubkey "cat" :created_at 160 :kind 1 :tags [["t" "tag0"]]}
           {:id "107" :pubkey "dog" :created_at 170 :kind 1 :tags [["p" "cat"] ["t" "tag1"]]}]
    :filters->results
-   [[[{:ids ["100" "101"]}] ["100" "101"]]
+   [[[{}] ["100" "101" "102" "103" "104" "105" "106" "107"]]
+    [[{} {:limit 1}] ["100" "101" "102" "103" "104" "105" "106" "107"]]
+    [[{:limit 2} {:limit 1}] ["106" "107"]]
+    [[{:ids ["100" "101"]}] ["100" "101"]]
     [[{:ids ["100" "101"] :limit 1}] ["101"]]
     [[{:since 140}] ["104" "105" "106" "107"]]
     [[{:since 140 :limit 1}] ["107"]]
+    [[{:since 150 :limit 1} {:until 120 :limit 3}] ["107" "102" "101" "100"]]
     [[{:since 140 :until 140}] ["104"]]
     [[{:until 140}] ["100" "101" "102" "103" "104"]]
     [[{:until 140 :limit 3}] ["102" "103" "104"]]
@@ -39,8 +43,7 @@
     [[{:#e ["100"]} {:#p ["abe" "cat"]} {:#t ["tag0"]}] ["103" "104" "105" "106" "107"]]]})
 
 (def filter-matches
-  [;; we never expect empty filter but test the base case anyway
-   {:filter {}
+  [{:filter {}
     :known-matches [{:id "id" :pubkey "pk" :created_at 100 :kind 1 :tags []}]
     :known-non-matches []}
    {:filter {:ids ["id0"]}

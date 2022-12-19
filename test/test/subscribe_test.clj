@@ -1,14 +1,16 @@
 (ns test.subscribe-test
-  (:require [clojure.test :refer :all]
-            [clojure.test.check :as tc]
-            [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as prop]
-            [clojure.tools.logging :as log]
-            [me.untethr.nostr.app :as app]
-            [me.untethr.nostr.subscribe :as subscribe]
-            [me.untethr.nostr.metrics :as metrics]
-            [test.support :as support]
-            [test.test-data :as test-data])
+  (:require
+    [clojure.set :as set]
+    [clojure.test :refer :all]
+    [clojure.test.check :as tc]
+    [clojure.test.check.generators :as gen]
+    [clojure.test.check.properties :as prop]
+    [clojure.tools.logging :as log]
+    [me.untethr.nostr.app :as app]
+    [me.untethr.nostr.subscribe :as subscribe]
+    [me.untethr.nostr.metrics :as metrics]
+    [test.support :as support]
+    [test.test-data :as test-data])
   (:import (java.util List)))
 
 (defn- throw-fn
@@ -29,6 +31,33 @@
             (#'subscribe/compile-filter "chan-id:req-id" filter throw-fn)
             (:id n) (:pubkey n) (:created_at n) (:kind n) (:tags n)))
         (pr-str i spec)))))
+
+(deftest subscribe-with-pool-data-test
+  (let [metrics-fake (metrics/create-metrics)
+        subs-atom (atom (subscribe/create-empty-subs))
+        idx->results-atom (atom {})]
+    ;; subscribe everything ...
+    (doseq [[idx [filters _]] (map-indexed vector
+                                (:filters->results test-data/pool-with-filters))]
+      (subscribe/subscribe! subs-atom
+        (format "chan%d" idx) (format "req%d" idx) filters
+        (fn [fake-raw-event]
+          (swap! idx->results-atom update idx (fnil conj []) fake-raw-event))))
+    ;; notify everything...
+    (doseq [{obj-id :id :as obj} (:pool test-data/pool-with-filters)]
+      (subscribe/notify! metrics-fake subs-atom obj (format "<fake-raw-event:%s>" obj-id)))
+    ;; verify...
+    (doseq [[idx [filters expected-ids]]
+            (map-indexed vector
+              (:filters->results test-data/pool-with-filters))
+            :let [has-limits? (some :limit filters)
+                  actual-raw-events (get @idx->results-atom idx [])
+                  expected-raw-events (mapv (partial format "<fake-raw-event:%s>") expected-ids)]]
+      (if has-limits?
+        (is (= (set expected-raw-events)
+              (set/intersection (set expected-raw-events) (set actual-raw-events)))
+          filters)
+        (is (= expected-raw-events actual-raw-events) filters)))))
 
 (deftest candidate-filters-test
   (let [subs-atom
@@ -197,15 +226,21 @@
 (deftest firehose-test
   (let [metrics-fake (metrics/create-metrics)
         subs-atom (atom (subscribe/create-empty-subs))
-        result-atom (atom nil)]
+        result-0-atom (atom nil)
+        result-1-atom (atom nil)]
     (subscribe/subscribe! subs-atom "scope-0" "main-channel"
       [{} {:ids ["abc"]}]
-      #(swap! result-atom (fnil conj []) %))
+      #(swap! result-0-atom (fnil conj []) %))
+    (subscribe/subscribe! subs-atom "scope-1" "main-channel"
+      [{}]
+      #(swap! result-1-atom (fnil conj []) %))
     (subscribe/notify! metrics-fake subs-atom {:id "abc"} "<raw-evt>")
-    (is (= @result-atom ["<raw-evt>"]))
-    (is (= 1 (subscribe/num-subscriptions subs-atom)))
-    (is (= 1 (subscribe/num-firehose-filters subs-atom)))
-    (is (= 2 (subscribe/num-filters subs-atom "scope-0")))))
+    (is (= @result-0-atom ["<raw-evt>"]))
+    (is (= @result-1-atom ["<raw-evt>"]))
+    (is (= 2 (subscribe/num-subscriptions subs-atom)))
+    (is (= 2 (subscribe/num-firehose-filters subs-atom)))
+    (is (= 2 (subscribe/num-filters subs-atom "scope-0")))
+    (is (= 1 (subscribe/num-filters subs-atom "scope-1")))))
 
 (deftest regression-test
   (support/with-regression-data [data-vec]

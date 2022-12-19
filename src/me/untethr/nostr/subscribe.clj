@@ -159,7 +159,7 @@
   "Does not wipe out prior subscription with same req-id; upstream is expected
    to unsubscribe! priors before subscribe!."
   [subs-atom channel-id req-id filters observer]
-  {:pre [(not (validation/filters-empty? filters))]}
+  {:pre [(not (empty? filters))]}
   (let [sid (str channel-id ":" req-id)]
     (swap! subs-atom #(subscribe!* % channel-id sid filters observer))))
 

@@ -86,6 +86,10 @@
 
 (def zero-hex-str (apply str (repeat 32 "0")))
 
+(defn filter-has-empty-attr?
+  [the-filter]
+  (some #(and (vector? %) (empty? %)) (vals the-filter)))
+
 (defn conform-filter-lenient
   [the-filter]
   ;; based on what we see from clients in the wild, we'll forgive some mistakes
@@ -115,11 +119,3 @@
   [req-id]
   (cond
     (not (string? req-id)) :err/req-id))
-
-(defn filter-empty?
-  [{:keys [ids kinds since until authors] e# :#e p# :#p :as _filter}]
-  (and (empty? ids) (empty? kinds) (nil? since) (nil? until) (empty? authors) (empty? e#) (empty? p#)))
-
-(defn filters-empty?
-  [filters]
-  (or (empty? filters) (every? filter-empty? filters)))

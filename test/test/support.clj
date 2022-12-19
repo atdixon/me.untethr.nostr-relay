@@ -4,8 +4,11 @@
             [me.untethr.nostr.store :as store]
             [me.untethr.nostr.app :as app]
             [me.untethr.nostr.json-facade :as json-facade]
-            [me.untethr.nostr.metrics :as metrics]
             [clojure.java.io :as io]))
+
+(def ^:private hex-chars "abcdef0123456789")
+
+(def fake-hex-str (apply str (take 32 (cycle hex-chars))))
 
 (defmacro with-memory-db
   [bindings & body]
