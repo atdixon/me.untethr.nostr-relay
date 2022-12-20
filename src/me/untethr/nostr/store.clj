@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
+            [next.jdbc.result-set :as rs])
+  (:import (org.sqlite SQLiteException)))
 
 (def get-datasource*
   (memoize
@@ -26,7 +27,14 @@
 
 (defn apply-schema! [db]
   (doseq [statement (parse-schema)]
-    (jdbc/execute-one! db [statement])))
+    (try
+      (jdbc/execute-one! db [statement])
+      (catch SQLiteException e
+        (when-not
+          (and
+            (re-matches #"(?is)^\s*alter table.*add column.*;\s*$" statement)
+            (str/includes? (ex-message e) "duplicate column name"))
+          (throw e))))))
 
 (defn init!
   [path]
@@ -43,21 +51,29 @@
   ;; we expect this simple select max(rowid) here to be fast over arbitrary volume
   (:res (jdbc/execute-one! db ["select max(rowid) as res from n_events"])))
 
+(defn insert-channel!
+  [db channel-id ip-address]
+  (jdbc/execute-one! db
+    ["insert or ignore into channels (channel_id, ip_addr) values (?,?)"
+     channel-id ip-address]))
+
 (defn- insert-event!*
-  [db id pubkey created-at kind raw]
+  [db id pubkey created-at kind raw channel-id]
   {:post [(or (nil? %) (contains? % :rowid))]}
   (jdbc/execute-one! db
     [(str
        "insert or ignore into n_events"
-       " (id, pubkey, created_at, kind, raw_event)"
-       " values (?, ?, ?, ?, ?) returning rowid")
-     id pubkey created-at kind raw]
+       " (id, pubkey, created_at, kind, raw_event, channel_id)"
+       " values (?, ?, ?, ?, ?, ?) returning rowid")
+     id pubkey created-at kind raw channel-id]
     {:builder-fn rs/as-unqualified-lower-maps}))
 
 (defn insert-event!
   "Answers inserted sqlite rowid or nil if row already exists."
-  [db id pubkey created-at kind raw]
-  (:rowid (insert-event!* db id pubkey created-at kind raw)))
+  ([db id pubkey created-at kind raw]
+   (insert-event! db id pubkey created-at kind raw nil))
+  ([db id pubkey created-at kind raw channel-id]
+   (:rowid (insert-event!* db id pubkey created-at kind raw channel-id))))
 
 (defn insert-e-tag!
   [db source-event-id tagged-event-id]

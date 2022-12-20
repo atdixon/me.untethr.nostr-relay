@@ -62,8 +62,10 @@
             (format "select v.rowid, v.raw_event from n_events v where %s" base-clause)
             :else
             (format "select v.rowid, v.raw_event from n_events v %s where %s" join-clause base-clause))
-        q (if (some? target-row-id) (str q " and v.rowid <= " target-row-id) q)
-        q (format "%s %s deleted_ = 0" q (if (empty? base-clause) "where" "and"))
+        extra-clauses (cond-> []
+                        (some? target-row-id) (conj (str "v.rowid <= " target-row-id))
+                        true (conj "deleted_ = 0"))
+        q (str q (if (empty? base-clause) " where " " and ") (str/join " and " extra-clauses))
         q (if (empty? join-clause) q (str q " group by v.rowid"))]
     (if (some? limit)
       ;; note: can't do order by w/in union query unless you leverage sub-queries like so:

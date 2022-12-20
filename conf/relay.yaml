@@ -6,3 +6,8 @@ http:
 
 sqlite:
   file: "n.db"
+
+# This is optional. If not specified, the relay will store events of any numeric
+# kind. Otherwise, the relay will (quietly) not store events not whitelisted
+# here. Note: once NIP-16 is implemented, we'll add "20000-29999" here:
+supported-kinds: ["0-5", "7", "40-49", "10000-19999"]

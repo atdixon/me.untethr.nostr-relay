@@ -53,7 +53,7 @@
         (metrics/fulfillment-num-rows! metrics @tally)))
     (catch Exception e
       (metrics/mark-fulfillment-error! metrics)
-      (log/error e "unexpected" {:channel-id channel-id :req-id req-id}))))
+      (log/error e "unexpected" {:channel-id channel-id :req-id req-id :filters filters}))))
 
 (defn submit!
   [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]

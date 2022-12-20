@@ -62,6 +62,15 @@ I use ngnix + https://letsencrypt.org/ for SSL termination and
 [DDoS mitigation](https://www.nginx.com/blog/mitigating-ddos-attacks-with-nginx-and-nginx-plus/)
 and configure it to talk to the relay process on port `9090`.
 
+### nginx Notes
+
+In `nginx.conf`, I set `worker_connections` high &mdash; e.g., `worker_connections 32768;`.
+
+I also enforce https except make an exception for http requests with
+`$http_accept = application/nostr+json`, because I've noticed that some clients
+in the wild issue http [NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md) 
+requests.
+
 Totally optionally but you may wish to limit access to `/metrics` and `/q`, eg, 
 via 
 [basic auth](https://docs.nginx.com/nginx/admin-guide/security-controls/configuring-http-basic-authentication/).

@@ -20,6 +20,12 @@ create table if not exists n_events
     sys_ts     timestamp            default current_timestamp
 );
 --
+-- sqlite does not support adding columns if they don't already exist,
+-- so, in our code, we will explicitly forgive when we execute alter table
+-- ... add column schema statements:
+alter table n_events
+    add column channel_id varchar(36);
+--
 create index if not exists idx_event_id on n_events (id);
 --
 create index if not exists idx_pubkey on n_events (pubkey);
@@ -78,3 +84,10 @@ create table if not exists x_tags
 --
 create index if not exists idx_tagged_value on x_tags (generic_tag, tagged_value);
 --
+create table if not exists channels
+(
+    channel_id varchar(36) not null,
+    ip_addr    varchar(45) not null,
+    sys_ts     timestamp default current_timestamp,
+    unique (channel_id)
+);
