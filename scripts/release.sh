@@ -9,10 +9,10 @@ fi
 
 read -rp 'Version: ' VERSION
 
-#if [[ ! "${VERSION}" =~ ^[0-9]\.[0-9]\.[0-9]+$ ]]; then
-#  echo "error: version looks bad: ${VERSION}"
-#  exit 1
-#fi
+if [[ ! "${VERSION}" =~ ^[0-9]\.[0-9]\.[0-9]+$ ]]; then
+  echo "error: version looks bad: ${VERSION}"
+  exit 1
+fi
 
 echo "Will release at version: ${VERSION}"
 
