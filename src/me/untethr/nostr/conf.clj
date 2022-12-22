@@ -6,19 +6,22 @@
 
 (defrecord Conf
   [^String optional-hostname
-   ^Integer http-port
+   ^Long http-port
    ^String sqlite-file
-   ^RangeSet optional-supported-kinds-range-set])
+   ^RangeSet optional-supported-kinds-range-set
+   ^Long optional-max-content-length])
 
 (defn pretty* [{:keys [optional-hostname
                        http-port
                        sqlite-file
-                       optional-supported-kinds-range-set] :as _conf}]
+                       optional-supported-kinds-range-set
+                       optional-max-content-length] :as _conf}]
   (str/join
     "\n"
     [(format "hostname: %s" (or optional-hostname "none specified"))
      (format "port: %d" http-port)
      (format "database file: %s" sqlite-file)
+     (format "max-content-length: %s" (or optional-max-content-length "<unlimited>"))
      (format "supported nip-1 kinds: %s" (or (some-> optional-supported-kinds-range-set str) "all of them"))]))
 
 (defn parse-supported-kinds*
@@ -55,4 +58,5 @@
       (get-in from-yaml [:hostname])
       (long (get-in from-yaml [:http :port]))
       (get-in from-yaml [:sqlite :file])
-      (parse-supported-kinds* from-yaml))))
+      (parse-supported-kinds* from-yaml)
+      (some-> (get from-yaml :max-content-length) long))))

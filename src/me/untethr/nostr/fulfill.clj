@@ -55,6 +55,14 @@
       (metrics/mark-fulfillment-error! metrics)
       (log/error e "unexpected" {:channel-id channel-id :req-id req-id :filters filters}))))
 
+(defn synchronous!!
+  "In most cases we'll want to use `submit!` fn for asynchronous fulfillment. However,
+   upstream caller/s may wish to perform synchronous fulfillment for certain requests that
+   are expected to answer quickly. Use with care!"
+  [metrics db channel-id req-id filters target-row-id observer eose-callback]
+  (let [cancelled?-vol (volatile! false)]
+    (do-fulfill metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
+
 (defn submit!
   [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [sid (str channel-id ":" req-id)

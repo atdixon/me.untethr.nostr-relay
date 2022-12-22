@@ -11,3 +11,6 @@ sqlite:
 # kind. Otherwise, the relay will (quietly) not store events not whitelisted
 # here. Note: once NIP-16 is implemented, we'll add "20000-29999" here:
 supported-kinds: ["0-5", "7", "40-49", "10000-19999"]
+
+# Optional. If not specified, then content of any length is accepted.
+max-content-length: 1048576

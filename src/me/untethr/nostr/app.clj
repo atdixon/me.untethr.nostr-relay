@@ -14,6 +14,7 @@
     [me.untethr.nostr.store :as store]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.validation :as validation]
+    [me.untethr.nostr.write-thread :as write-thread]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs]
     [org.httpkit.server :as hk]
@@ -55,11 +56,13 @@
 
 (defn- create-event-message
   [req-id raw-event]
-  ;; careful here; we're stitching the json ourselves b/c we have the raw event
+  ;; important: req-id may be null
+  ;; careful here! we're stitching the json ourselves b/c we have the raw event:
   (format "[\"EVENT\",%s,%s]" (write-str* req-id) raw-event))
 
 (defn- create-eose-message
   [req-id]
+  ;; important: req-id may be null
   (format "[\"EOSE\",%s]" (write-str* req-id)))
 
 (defn- create-notice-message
@@ -80,11 +83,10 @@
       true
       (format "duplicate:%s" ok-message-str))))
 
-(defn- handle-stored-event!
-  [metrics ch event ok-message-str]
-  (metrics/duplicate-event! metrics)
+(defn- handle-stored-or-replaced-event!
+  [_metrics ch event ok-message-str]
   (hk/send! ch
-    (create-ok-message (:id event) true ok-message-str)))
+    (create-ok-message (:id event) true (format ":%s" ok-message-str))))
 
 (defn- store-event!
   ([db event-obj raw-event]
@@ -114,35 +116,97 @@
       (hk/send! ch
         (create-ok-message
           (:id event)
-          false
+          false ;; failed!
           (format "invalid:%s%s" (:err err-map)
             (if (:context err-map)
               (str " (" (:context err-map) ")") ""))))
       (hk/send! ch
         (create-notice-message (str "Badly formed event id: " event-id))))))
 
+(defn- reject-event-before-verify?
+  "Before even verifying the event, can we determine that we'll reject it?
+   This function returns nil for no rejection, otherwise it returns a short
+   human-readable reason for the rejection."
+  [conf event-obj]
+  (cond
+    ;; only validate kind if it's available as a number; the actual
+    ;; event verification step will fail for non-numeric or missing kinds.
+    (and
+      (number? (:kind event-obj))
+      (not (conf/supports-kind? conf (:kind event-obj))))
+    (format "event \"kind\" '%s' not supported" (:kind event-obj))
+    ;; only validate content if it's available as a string; the actual
+    ;; event verification step will fail for bad content types.
+    (and
+      (:optional-max-content-length conf)
+      (string? (get event-obj :content))
+      (> (alength ^bytes (.getBytes ^String (get event-obj :content)))
+        (:optional-max-content-length conf)))
+    (format "event \"content\" too long; maximum content length is %d"
+      (:optional-max-content-length conf))))
+
+(defn- handle-rejected-event!
+  [metrics ch event-obj rejection-message-str]
+  (metrics/rejected-event! metrics)
+  (hk/send! ch
+    (create-ok-message
+      (:id event-obj)
+      false ;; failed
+      (format "rejected:%s" rejection-message-str))))
+
+(defn- replaceable-event?
+  [event-obj]
+  ;; https://github.com/nostr-protocol/nips/blob/master/16.md
+  (some-> event-obj :kind (#(<= 10000 % (dec 20000)))))
+
+(defn- ephemeral-event?
+  [event-obj]
+  ;; https://github.com/nostr-protocol/nips/blob/master/16.md
+  (some-> event-obj :kind (#(<= 20000 % (dec 30000)))))
+
+(defn- receive-accepted-event!
+  [^Conf conf metrics db subs-atom channel-id ch event-obj _raw-message]
+  (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event event-obj))]
+    (if (identical? verified-event-or-err-map event-obj)
+      ;; for now re-render raw event into json; could be faster by stealing it
+      ;; from raw message via state machine or regex instead of serializing again.
+      ;; we'll also order keys (as an unnecessary nicety) so that clients see
+      ;; a predictable payload form.
+      (let [raw-event (json-facade/write-str-order-keys* verified-event-or-err-map)]
+        (cond
+          (ephemeral-event? event-obj)
+          (do
+            ;; per https://github.com/nostr-protocol/nips/blob/master/20.md: "Ephemeral
+            ;; events are not acknowledged with OK responses, unless there is a failure."
+            :no-op)
+          :else
+          ;; note: we are not at this point handling nip-16 replaceable events in code;
+          ;; currently a sqlite trigger is handling this for us, so we can go through the
+          ;; standard storage handling here. incidentally this means we'll handle
+          ;; duplicates the same for non-replaceable events (it should be noted that
+          ;; this means we'll send a duplicate: response whenever someone sends a
+          ;; replaceable event that has already been replaced, and we'll bear that cross)
+          (write-thread/run-async!
+            (fn []
+              (metrics/time-store-event! metrics
+                (store-event! db channel-id verified-event-or-err-map raw-event)))
+            (fn [store-result]
+              (if (identical? store-result :duplicate)
+                (handle-duplicate-event! metrics ch event-obj "duplicate")
+                (handle-stored-or-replaced-event! metrics ch event-obj "stored")))
+            (fn [^Throwable t]
+              (log/error t "while storing event" event-obj))))
+        (metrics/time-notify-event! metrics
+          (subscribe/notify! metrics subs-atom event-obj raw-event)))
+      (handle-invalid-event! metrics ch event-obj verified-event-or-err-map))))
+
 (defn- receive-event
-  [^Conf conf metrics db subs-atom channel-id ch [_ e] _raw-message]
+  [^Conf conf metrics db subs-atom channel-id ch [_ e] raw-message]
   ;; here we'll only handle the incoming :kind if e has it and either we have
   ;; not configured supported-kinds or the kind is in the supported-kinds list.
-  (if (some->> e :kind (conf/supports-kind? conf))
-    (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event e))]
-      (if (identical? verified-event-or-err-map e)
-        ;; for now re-render raw event into json; could be faster by stealing it
-        ;; from raw message via state machine or regex instead of serializing again.
-        ;; we'll also order keys (as an unnecessary nicety) so that clients see
-        ;; a predictable payload form.
-        (let [raw-event (json-facade/write-str-order-keys* verified-event-or-err-map)
-              store-result (metrics/time-store-event! metrics
-                             (store-event! db channel-id verified-event-or-err-map raw-event))]
-          (if (identical? store-result :duplicate)
-            (handle-duplicate-event! metrics ch e "ok")
-            (handle-stored-event! metrics ch e "ok"))
-          (metrics/time-notify-event! metrics
-            (subscribe/notify! metrics subs-atom e raw-event)))
-        (handle-invalid-event! metrics ch e verified-event-or-err-map)))
-    ;; else --
-    (log/debugf "silently ignoring event of kind %s" (:kind e))))
+  (if-let [rejection-reason (reject-event-before-verify? conf e)]
+    (handle-rejected-event! metrics ch e rejection-reason)
+    (receive-accepted-event! ^Conf conf metrics db subs-atom channel-id ch e raw-message)))
 
 (def max-filters 15)
 
@@ -173,20 +237,34 @@
     distinct
     vec))
 
+(defn- fulfill-synchronously?
+  [req-filters]
+  (and (= (count req-filters) 1)
+    (some-> req-filters (nth 0) :limit (= 1))))
+
+(defn- ->internal-req-id
+  [req-id]
+  (or req-id "<null>"))
+
 (defn- receive-req
   [^Conf conf metrics db subs-atom fulfill-atom channel-id ch [_ req-id & req-filters]]
   (if-not (every? map? req-filters)
     (log/warn "invalid req" {:msg "expected objects"})
     ;; else -- req has basic form...
     (let [use-req-filters (prepare-req-filters* conf req-filters)
-          req-err (validation/req-err req-id use-req-filters)]
+          ;; we've seen null subscription ids from clients in the wild, so we'll
+          ;; begrudgingly support them by coercing to string here -- note that
+          ;; we call it "internal" because any time we send the id back to the
+          ;; client we'll want to use the original (possibly nil) id.
+          internal-req-id (->internal-req-id req-id)
+          req-err (validation/req-err internal-req-id use-req-filters)]
       (if req-err
-        (log/warn "invalid req" {:req-err req-err :req [req-id use-req-filters]})
+        (log/warn "invalid req" {:req-err req-err :req [internal-req-id use-req-filters]})
         ;; else --
         (do
           ;; just in case we're still fulfilling prior subscription w/ same req-id
-          (fulfill/cancel! fulfill-atom channel-id req-id)
-          (subscribe/unsubscribe! subs-atom channel-id req-id)
+          (fulfill/cancel! fulfill-atom channel-id internal-req-id)
+          (subscribe/unsubscribe! subs-atom channel-id internal-req-id)
           ;; from here on, we'll completely ignore empty filters -- that is,
           ;; filters that are empty after we've done our prepare step above.
           (when-not (empty? use-req-filters)
@@ -204,35 +282,52 @@
               (do
                 ;; subscribe first so we are guaranteed to dispatch new arrivals
                 (metrics/time-subscribe! metrics
-                  (subscribe/subscribe! subs-atom channel-id req-id use-req-filters
+                  (subscribe/subscribe! subs-atom channel-id internal-req-id use-req-filters
                     (fn [raw-event]
                       ;; "some" safety if we're notified and our channel has closed,
                       ;; but we've not yet unsubscribed in response; this isn't thread
                       ;; safe so could still see channel close before the send!;
                       ;; upstream observer invocation should catch and log.
                       (when (hk/open? ch)
-                        (hk/send! ch (create-event-message req-id raw-event))))))
+                        (hk/send! ch
+                          ;; note: it's essential we use original possibly nil req-id here,
+                          ;; note the internal one (see note above):
+                          (create-event-message req-id raw-event))))))
                 ;; after subscription, capture fulfillment target rowid; in rare cases we
-                ;; may double-deliver an event or few but we will never miss an event
+                ;; may double-deliver an event or few, but we will never miss an event
                 (if-let [target-row-id (store/max-event-rowid db)]
-                  (fulfill/submit! metrics db fulfill-atom channel-id req-id use-req-filters target-row-id
-                    (fn [raw-event]
-                      ;; see note above; we may see channel close before we cancel
-                      ;; fulfillment
-                      (when (hk/open? ch)
-                        (hk/send! ch (create-event-message req-id raw-event))))
-                    (fn []
-                      (hk/send! ch (create-eose-message req-id))))
+                  (letfn [(fulfillment-observer [raw-event]
+                            ;; see note above; we may see channel close before we cancel
+                            ;; fulfillment
+                            (when (hk/open? ch)
+                              (hk/send! ch (create-event-message req-id raw-event))))
+                          (fulfillment-eose-callback []
+                            (hk/send! ch (create-eose-message req-id)))]
+                    (if (fulfill-synchronously? use-req-filters)
+                      ;; note: some requests we'd like to *fulfill* asap w/in the
+                      ;; channel request w/o giving up thre current thread. assumption
+                      ;; here is that we're responding to client before we handle
+                      ;; any other REQ or other event from the client (need to confirm
+                      ;; httpkit handles channels this way so that other websocket
+                      ;; channels are served..)
+                      (fulfill/synchronous!!
+                        metrics db channel-id internal-req-id use-req-filters target-row-id
+                        fulfillment-observer fulfillment-eose-callback)
+                      (fulfill/submit!
+                        metrics db fulfill-atom channel-id internal-req-id use-req-filters target-row-id
+                        fulfillment-observer fulfillment-eose-callback)))
                   ;; should only occur on epochal first event
                   (log/warn "no max rowid; nothing yet to fulfill"))))))))))
 
 (defn- receive-close
   [metrics db subs-atom fulfill-atom channel-id ch [_ req-id]]
-  (if-let [err (validation/close-err req-id)]
-    (log/warn "invalid close" {:err err :req-id req-id})
-    (do (metrics/time-unsubscribe! metrics
-          (subscribe/unsubscribe! subs-atom channel-id req-id))
-        (fulfill/cancel! fulfill-atom channel-id req-id))))
+  (let [internal-req-id (->internal-req-id req-id)]
+    (if-let [err (validation/close-err internal-req-id)]
+      (log/warn "invalid close" {:err err :req-id internal-req-id})
+      (do
+        (metrics/time-unsubscribe! metrics
+          (subscribe/unsubscribe! subs-atom channel-id internal-req-id))
+        (fulfill/cancel! fulfill-atom channel-id internal-req-id)))))
 
 (defn- parse-raw-message*
   [raw-message]
@@ -263,9 +358,13 @@
         (handle-problem-message! metrics ch raw-message (str "Expected a JSON array: " raw-message))))))
 
 (defn- ws-open
-  [metrics db subs-atom fulfill-atom {:keys [uuid ip-address] :as _websocket-state} ch]
+  [metrics db subs-atom fulfill-atom {:keys [uuid ip-address] :as websocket-state} ch]
   (log/debug 'ws-open uuid)
-  (store/insert-channel! db uuid ip-address)
+  (write-thread/run-async!
+    (fn [] (metrics/time-insert-channel! metrics
+             (store/insert-channel! db uuid ip-address)))
+    (fn [_] (log/debug "created channel" websocket-state))
+    (fn [^Throwable t] (log/error t "while inserting new channel" websocket-state)))
   (metrics/websocket-open! metrics))
 
 (defn- ws-close
@@ -297,17 +396,25 @@
   ;; X-Real-IP, httpkit will offer headers in lowercase:
   (get-in req [:headers "x-real-ip"] (:remote-addr req)))
 
+(defn- create-websocket-channel*
+  [^Conf conf metrics db subs-atom fulfill-atom req]
+  (let [websocket-state {:uuid (str (UUID/randomUUID))
+                         :start-ns (System/nanoTime)
+                         :ip-address (req->ip-address* req)}]
+    (try
+      (hk/as-channel req
+        {:on-open (partial ws-open metrics db subs-atom fulfill-atom websocket-state)
+         :on-receive (partial ws-receive conf metrics db subs-atom fulfill-atom websocket-state)
+         :on-close (partial ws-close metrics db subs-atom fulfill-atom websocket-state)})
+      (catch Exception e
+        (log/warn e "failed to create websockete channel" websocket-state)
+        (throw e)))))
+
 (defn- handler [^Conf conf nip11-json metrics db subs-atom fulfill-atom req]
   ;; req contains :remote-addr, :headers {}, ...
   (cond
     (:websocket? req)
-    (let [websocket-state {:uuid (str (UUID/randomUUID))
-                           :start-ns (System/nanoTime)
-                           :ip-address (req->ip-address* req)}]
-      (hk/as-channel req
-        {:on-open (partial ws-open metrics db subs-atom fulfill-atom websocket-state)
-         :on-receive (partial ws-receive conf metrics db subs-atom fulfill-atom websocket-state)
-         :on-close (partial ws-close metrics db subs-atom fulfill-atom websocket-state)}))
+    (create-websocket-channel* conf metrics db subs-atom fulfill-atom req)
     (and (nip11-request? req) nip11-json)
     (nip11-response nip11-json)
     (not (str/blank? (:optional-hostname conf)))

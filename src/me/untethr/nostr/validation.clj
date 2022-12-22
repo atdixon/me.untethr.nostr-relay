@@ -20,7 +20,9 @@
   (integer? t))
 
 (defn valid-username? [value]
-  (some? (re-matches #"\w[\w-]+\w" value)))
+  (or (nil? value)
+    (and (string? value)
+      (some? (re-matches #"\w[\w-]+\w" value)))))
 
 (defn kind-0-event-err
   [{:keys [content]}]
@@ -111,9 +113,9 @@
     (update :#p #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
     ;; (2) we've seen floats in the wild eg 1.671315671052E9
     (not (nil? (:since the-filter)))
-    (update :since #(if (number? %) (int %) %))
+    (update :since #(if (number? %) (long %) %))
     (not (nil? (:until the-filter)))
-    (update :until #(if (number? %) (int %) %))))
+    (update :until #(if (number? %) (long %) %))))
 
 (defn close-err
   [req-id]

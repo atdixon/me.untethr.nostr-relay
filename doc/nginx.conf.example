@@ -1,0 +1,81 @@
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+
+events {
+	worker_connections 32768;
+}
+
+http {
+	sendfile on;
+	tcp_nopush on;
+	types_hash_max_size 2048;
+
+	include /etc/nginx/mime.types;
+	default_type application/octet-stream;
+
+	ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; # Dropping SSLv3, ref: POODLE
+	ssl_prefer_server_ciphers on;
+
+	access_log /var/log/nginx/access.log;
+	error_log /var/log/nginx/error.log;
+
+	gzip on;
+
+	limit_conn_zone $binary_remote_addr zone=addr:10m;
+
+    upstream http_backend {
+        server 127.0.0.1:9090;
+        keepalive 32;
+    }
+
+    server {
+        server_name nostr-relay.untethr.me; # managed by Certbot
+
+        location / {
+            limit_conn addr 10;
+            proxy_pass http://http_backend/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "Upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_send_timeout 2d;
+            proxy_read_timeout 2d;
+        }
+
+        listen [::]:443 ssl ipv6only=on; # managed by Certbot
+        listen 443 ssl; # managed by Certbot
+        ssl_certificate /etc/letsencrypt/live/nostr-relay.untethr.me/fullchain.pem; # managed by Certbot
+        ssl_certificate_key /etc/letsencrypt/live/nostr-relay.untethr.me/privkey.pem; # managed by Certbot
+        include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+        ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+    }
+
+    server {
+        listen 80 ;
+        listen [::]:80 ;
+        server_name nostr-relay.untethr.me;
+
+        # take notice use of "=" here:
+        location = / {
+            limit_conn addr 10;
+            proxy_pass http://http_backend/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        # allow http for nip11
+        if ($http_accept = application/nostr+json) {
+            break;
+        }
+
+        if ($host = nostr-relay.untethr.me) {
+            return 301 https://$host$request_uri;
+        } # managed by Certbot
+
+        return 404; # managed by Certbot
+    }
+
+}

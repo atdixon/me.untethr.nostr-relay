@@ -16,9 +16,11 @@
 
   com.google.guava/guava {:mvn/version "31.1-jre"}
 
+  com.bucket4j/bucket4j-core {:mvn/version "8.1.1"}
+
   metrics-clojure/metrics-clojure {:mvn/version "2.10.0"}
   metrics-clojure-jvm/metrics-clojure-jvm {:mvn/version "2.10.0"}
-  io.dropwizard.metrics/metrics-json {:mvn/version "4.2.13"}
+  io.dropwizard.metrics/metrics-json {:mvn/version "4.2.14"}
 
   org.clojure/tools.logging {:mvn/version "1.2.4"}
   ch.qos.logback/logback-classic {:mvn/version "1.4.5"}}

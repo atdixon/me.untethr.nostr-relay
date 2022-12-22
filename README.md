@@ -4,8 +4,9 @@ A [nostr](https://github.com/fiatjaf/nostr/) relay, written in Clojure.
 
 ### Run
 
-For a real deployment you'll want to deploy with ssl termination (eg [ngnix](https://www.nginx.com/))
-but for local testing, simply:
+For a [real deployment](#how-to-deploy), you'll want to deploy with ssl 
+termination (e.g. using [ngnix](https://www.nginx.com/)) but for local testing, 
+simply:
 
 ```
 $ brew install clojure/tools/clojure
@@ -22,6 +23,7 @@ Edit `./conf/relay.yaml` to change port, file, etc.
 ### Known Deployments
 
 * wss://nostr-relay.untethr.me
+* wss://relay.kronkltd.net
 
 ### How to Deploy
 
@@ -40,37 +42,19 @@ conf/logback.xml
 ```
 
 Unpack on server, update config files to your personal liking,
-and run:
+and run (using java 11+):
 
 ```
-$ java -Xms512m -Xmx1g \
+$ java -Xms1g -Xmx1g \
     -Dlogback.configurationFile=conf/logback.xml \
     -cp me.untethr.nostr-relay.jar \
     clojure.main -m me.untethr.nostr.app
 ```
 
-There are many ways to complete a deployment.
+This runs the relay on the port specified in `conf/relay.yaml` (default 9090).
 
-I deploy on Debian and use [systemd](https://en.wikipedia.org/wiki/Systemd) to
-launch a script with the above `java` command. 
+You'll want your users to hit a reverse proxy, configured to serve SSL traffic
+(wss://...) and proxy to the relay.
 
-`conf/relay.yml` controls which port the relay runs on. By
-default this is `9090`; this is a fine default as you'll want
-to run something else exposed on well-known SSL port.
-
-I use ngnix + https://letsencrypt.org/ for SSL termination and
-[DDoS mitigation](https://www.nginx.com/blog/mitigating-ddos-attacks-with-nginx-and-nginx-plus/)
-and configure it to talk to the relay process on port `9090`.
-
-### nginx Notes
-
-In `nginx.conf`, I set `worker_connections` high &mdash; e.g., `worker_connections 32768;`.
-
-I also enforce https except make an exception for http requests with
-`$http_accept = application/nostr+json`, because I've noticed that some clients
-in the wild issue http [NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md) 
-requests.
-
-Totally optionally but you may wish to limit access to `/metrics` and `/q`, eg, 
-via 
-[basic auth](https://docs.nginx.com/nginx/admin-guide/security-controls/configuring-http-basic-authentication/).
+See [Deploy](./doc/deploy.md) for more information on how to run a real 
+deployment.

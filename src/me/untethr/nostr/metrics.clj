@@ -18,9 +18,11 @@
    ^Histogram websocket-lifetime-secs
    ^Timer verify-timer
    ^Timer store-event-timer
+   ^Timer insert-channel-timer
    ^Timer notify-event-timer
    ^Histogram notify-num-candidates
    ^Meter problem-message
+   ^Meter rejected-event
    ^Meter invalid-event
    ^Meter duplicate-event
    ^Timer subscribe-timer
@@ -60,9 +62,11 @@
        (histogram codahale ["app" "websocket" "lifetime-secs"])
        (timer codahale ["app" "event" "verify"])
        (timer codahale ["app" "event" "store"])
+       (timer codahale ["app" "channel" "insert"])
        (timer codahale ["app" "event" "notify"])
        (histogram codahale ["app" "subscribe" "notify-num-candidates"])
        (meter codahale ["app" "message" "problem"])
+       (meter codahale ["app" "event" "rejected"])
        (meter codahale ["app" "event" "invalid"])
        (meter codahale ["app" "event" "duplicate"])
        (timer codahale ["app" "event" "subscribe"])
@@ -97,6 +101,10 @@
   [metrics]
   (mark! (:problem-message metrics)))
 
+(defn rejected-event!
+  [metrics]
+  (mark! (:rejected-event metrics)))
+
 (defmacro time-verify!
   [metrics & body]
   `(time! (:verify-timer ~metrics) ~@body))
@@ -104,6 +112,10 @@
 (defmacro time-store-event!
   [metrics & body]
   `(time! (:store-event-timer ~metrics) ~@body))
+
+(defmacro time-insert-channel!
+  [metrics & body]
+  `(time! (:insert-channel-timer ~metrics) ~@body))
 
 (defmacro time-notify-event!
   [metrics & body]

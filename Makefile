@@ -6,6 +6,11 @@ clean:
 test:
 	clj -X:test
 
+.PHONY: dependency-sources
+dependency-sources:
+	clj -X:deps mvn-pom
+	mvn dependency:sources
+
 .PHONY: run
 run:
 	clj -J-Dlogback.configurationFile=conf/logback.xml -M -m me.untethr.nostr.app

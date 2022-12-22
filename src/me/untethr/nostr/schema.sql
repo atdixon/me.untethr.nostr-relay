@@ -65,6 +65,26 @@ begin
       and pubkey = NEW.pubkey;
 end;
 --
+--
+--
+create trigger if not exists insert_replaceable_kind
+    after insert
+    on n_events
+    when NEW.kind between 10000 and 19999
+begin
+    update n_events
+    set deleted_ =
+            (case
+                 when created_at <> (select max(created_at)
+                                     from n_events
+                                     where kind = NEW.kind
+                                       and pubkey = NEW.pubkey)
+                     then 1
+                 else 0 end)
+    where kind = NEW.kind
+      and pubkey = NEW.pubkey;
+end;
+--
 create table if not exists p_tags
 (
     source_event_id varchar(64) not null,

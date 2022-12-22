@@ -3,10 +3,40 @@
     [clojure.test :refer :all]
     [me.untethr.nostr.app :as app]
     [me.untethr.nostr.conf :as conf]
+    [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.query :as query]
+    [me.untethr.nostr.subscribe :as subscribe]
+    [me.untethr.nostr.write-thread :as write-thread]
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs]
     [test.support :as support]))
 
+(defn make-test-conf
+  ([]
+   (make-test-conf nil nil))
+  ([supported-kinds-vec max-content-length]
+   (conf/->Conf nil 1234 "nx.db"
+     (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
+     max-content-length)))
+
+(deftest fulfill-synchronously?-test
+  (is (not (#'app/fulfill-synchronously? [])))
+  (is (not (#'app/fulfill-synchronously? [{}])))
+  (is (not (#'app/fulfill-synchronously? [{:authors []}])))
+  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+                                           :kinds [1 2 3]}])))
+  (is (not (#'app/fulfill-synchronously? [{:limit 2}])))
+  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+                                           :kinds [1 2 3]
+                                           :limit 2}])))
+  (is (#'app/fulfill-synchronously? [{:limit 1}]))
+  (is (#'app/fulfill-synchronously? [{:authors [] :limit 1}]))
+  (is (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+                                      :kinds [1 2 3]
+                                      :limit 1}])))
+
 (deftest prepare-req-filters*-test
-  (let [conf (conf/->Conf nil 1234 "nx.db" nil)]
+  (let [conf (make-test-conf)]
     (is (= [] (#'app/prepare-req-filters* conf [])))
     (is (= [] (#'app/prepare-req-filters* conf [{:authors []}])))
     (is (= [{}] (#'app/prepare-req-filters* conf [{}])))
@@ -21,8 +51,7 @@
           (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]
                                              :kinds [1 2 3]}]))))
-  (let [conf (conf/->Conf nil 1234 "nx.db"
-               (conf/parse-supported-kinds* {:supported-kinds ["1-2"]}))]
+  (let [conf (make-test-conf ["1-2"] nil)]
     (is (= [] (#'app/prepare-req-filters* conf [])))
     (is (= [] (#'app/prepare-req-filters* conf [{:authors []}])))
     (is (= [{}] (#'app/prepare-req-filters* conf [{}])))
@@ -42,3 +71,143 @@
           (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]
                                              :kinds [3 4]}])))))
+
+(deftest rejected-event-test
+  ;; This test is a sort of \"integration\" test for the `app/receive-event`
+  ;; handling. In the case of app code refactoring we may need to revisit
+  ;; redefs here, etc.
+  (let [result-atom (atom [])
+        invoke-sut! #(do
+                       (reset! result-atom [])
+                       (#'app/receive-event
+                         %1
+                         ::stub-metrics
+                         ::stub-db
+                         ::stub-subs-atom
+                         ::stub-channel-id
+                         ::stub-channel
+                         ["EVENT" %2]
+                         ::stub-raw-message)
+                       @result-atom)]
+    (with-redefs [app/receive-accepted-event! (fn [& _] (swap! result-atom conj :accept))
+                  app/handle-rejected-event! (fn [& _] (swap! result-atom conj :reject))]
+      ;; note: for rejection purposes we don't actually reject when :kind is missing
+      ;; or invalid or when :content is invalid type, we only reject if :kind is
+      ;; valid but we are configured not to support it, or if :content is valid
+      ;; but too long
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] 3) {:content "0123"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] 3) {:content "012"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:content "012"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 1})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 3}))))))
+
+(deftest receive-accepted-event-test
+  ;; This test is an \"integration\"-ish test for the `app/receive-accepted-event!`
+  ;; handling. In the case of app code refactoring we may need to revisit
+  ;; redefs here, etc.
+  (let [fake-metrics (metrics/create-metrics)
+        result-atom (atom [])
+        make-event (fn [id pk ts k & {:keys [p# e# z#]}]
+                     {:id id :pubkey pk :created_at ts :kind k
+                      :tags (vec
+                              (concat
+                                (map #(vector "p" %) p#)
+                                (map #(vector "p" %) e#)
+                                (map #(vector "z" %) z#)))})
+        q* (fn
+             ([db]
+              (jdbc/execute! db ["select * from n_events where deleted_ = 0"]
+                {:builder-fn rs/as-unqualified-lower-maps}))
+             ([db id]
+              (jdbc/execute-one! db ["select * from n_events where id = ? and deleted_ = 0" id]
+                {:builder-fn rs/as-unqualified-lower-maps})))]
+    (support/with-memory-db [db]
+      (let [invoke-sut! #(do
+                           (reset! result-atom [])
+                           (#'app/receive-accepted-event!
+                             ::stub-conf
+                             fake-metrics
+                             db
+                             ::stub-subs-atom
+                             ::stub-channel-id
+                             ::stub-channel
+                             %1
+                             ::stub-raw-message)
+                           @result-atom)]
+        (with-redefs [;; for our test we need run-async to actually be a blocking sync:
+                      write-thread/run-async! (fn [task-fn success-fn failure-fn]
+                                                (let [res (try
+                                                            (task-fn)
+                                                            (catch Throwable t
+                                                              t))]
+                                                  (if (instance? Throwable res)
+                                                    (failure-fn res)
+                                                    (success-fn res))))
+                      app/as-verified-event identity
+                      app/handle-duplicate-event! (fn [& _] (swap! result-atom conj :duplicate))
+                      app/handle-stored-or-replaced-event! (fn [& _] (swap! result-atom conj :stored*))
+                      app/handle-invalid-event! (fn [& _] (swap! result-atom conj :invalid))
+                      subscribe/notify! (fn [& _] (swap! result-atom conj :notified))]
+          (is (= [:stored* :notified]
+                (invoke-sut! (make-event "10" "pk0" 10 1))))
+          (is (= [:duplicate :notified]
+                (invoke-sut! (make-event "10" "-pk0" -10 -1 :p# ["pkX"]))))
+          (doseq [ephemeral-kind [29999 20000]
+                  :let [event-obj (make-event "20" "pk0" 20 ephemeral-kind :p# ["pkX"])]]
+            (is (#'app/ephemeral-event? event-obj))
+            (is (= [:notified] ;; ephemeral events are notified, never stored.
+                  (invoke-sut! event-obj))))
+          ;; duplicate event did not replace original (this is sanity check;
+          ;; in production, we should never invoke receive-accepted-event!
+          ;; with same id but different payloads as at least one would not
+          ;; verify.
+          (is (= [{:id "10" :pubkey "pk0"}]
+                (mapv #(select-keys % [:id :pubkey]) (q* db))))
+          (let [make-id (partial format "time-%s:kind-%s")]
+            (doseq [replaceable-kind [19999 10000]]
+              (let [created-at 10
+                    event-id (make-id created-at replaceable-kind)
+                    event-obj (make-event event-id "pk0" created-at replaceable-kind :p# ["pkX" "pkY"] :z# ["booya"])]
+                (is (#'app/replaceable-event? event-obj))
+                (is (= [:stored* :notified] (invoke-sut! event-obj))))
+              (let [created-at 20
+                    event-id (make-id created-at replaceable-kind)
+                    event-obj (make-event event-id "pk0" created-at replaceable-kind :p# ["pkX"] :z# ["smasha"])]
+                (is (#'app/replaceable-event? event-obj))
+                (is (= [:stored* :notified] (invoke-sut! event-obj))))
+              (let [created-at 15
+                    event-id (make-id created-at replaceable-kind)
+                    event-obj (make-event event-id "pk0" created-at replaceable-kind :p# ["pkX"])]
+                (is (#'app/replaceable-event? event-obj))
+                (is (= [:stored* :notified] (invoke-sut! event-obj)))))
+            (doseq [[idx replaceable-kind] (map-indexed vector [19999 10000])]
+              (is (nil? (q* db (make-id 10 idx replaceable-kind))))
+              (is (nil? (q* db (make-id 15 idx replaceable-kind))))
+              ;; the latest one is the not deleted one:
+              (is (= {:pubkey "pk0" :created_at 20}
+                    (->
+                      (q* db (make-id 20 replaceable-kind))
+                      (select-keys [:pubkey :created_at])))))
+            ;; last check over all data written by this test -- we're passing
+            ;; through a lot of integrative pieces here:
+            (let [q (query/filters->query [{}] nil)]
+              (is (= ["10" (make-id 20 19999) (make-id 20 10000)]
+                    (mapv (comp :id #'app/parse :raw_event)
+                      (jdbc/execute! db q
+                        {:builder-fn rs/as-unqualified-lower-maps})))))
+            (let [q (query/filters->query [{:#p ["pkX"]}] nil)]
+              (is (= [(make-id 20 19999) (make-id 20 10000)]
+                    (mapv (comp :id #'app/parse :raw_event)
+                      (jdbc/execute! db q
+                        {:builder-fn rs/as-unqualified-lower-maps})))))
+            (let [q (query/filters->query [{:#z ["booya"]}] nil)]
+              (is (= []
+                    (mapv (comp :id #'app/parse :raw_event)
+                      (jdbc/execute! db q
+                        {:builder-fn rs/as-unqualified-lower-maps})))))
+            (let [q (query/filters->query [{:#z ["smasha"]}] nil)]
+              (is (= [(make-id 20 19999) (make-id 20 10000)]
+                    (mapv (comp :id #'app/parse :raw_event)
+                      (jdbc/execute! db q
+                        {:builder-fn rs/as-unqualified-lower-maps})))))))))))
