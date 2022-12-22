@@ -15,9 +15,11 @@
   ([]
    (make-test-conf nil nil))
   ([supported-kinds-vec max-content-length]
+   (make-test-conf supported-kinds-vec max-content-length nil))
+  ([supported-kinds-vec max-content-length max-created-at-delta]
    (conf/->Conf nil 1234 "nx.db"
      (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
-     max-content-length)))
+     max-content-length max-created-at-delta)))
 
 (deftest fulfill-synchronously?-test
   (is (not (#'app/fulfill-synchronously? [])))
@@ -100,7 +102,15 @@
       (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] 3) {:content "012"})))
       (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:content "012"})))
       (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 1})))
-      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 3}))))))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 3})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+                         {:created_at (#'app/current-system-epoch-seconds)})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+                         {:created_at (#'app/current-system-epoch-seconds)})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+                         {:created_at (+ (#'app/current-system-epoch-seconds) 50)})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+                         {:created_at (+ (#'app/current-system-epoch-seconds) 200)}))))))
 
 (deftest receive-accepted-event-test
   ;; This test is an \"integration\"-ish test for the `app/receive-accepted-event!`

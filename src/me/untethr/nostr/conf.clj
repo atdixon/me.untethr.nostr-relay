@@ -9,19 +9,22 @@
    ^Long http-port
    ^String sqlite-file
    ^RangeSet optional-supported-kinds-range-set
-   ^Long optional-max-content-length])
+   ^Long optional-max-content-length
+   ^Long optional-max-created-at-delta])
 
 (defn pretty* [{:keys [optional-hostname
                        http-port
                        sqlite-file
                        optional-supported-kinds-range-set
-                       optional-max-content-length] :as _conf}]
+                       optional-max-content-length
+                       optional-max-created-at-delta] :as _conf}]
   (str/join
     "\n"
     [(format "hostname: %s" (or optional-hostname "none specified"))
      (format "port: %d" http-port)
      (format "database file: %s" sqlite-file)
      (format "max-content-length: %s" (or optional-max-content-length "<unlimited>"))
+     (format "max-created-at-delta: %s" (or optional-max-created-at-delta "<unlimited>"))
      (format "supported nip-1 kinds: %s" (or (some-> optional-supported-kinds-range-set str) "all of them"))]))
 
 (defn parse-supported-kinds*
@@ -59,4 +62,5 @@
       (long (get-in from-yaml [:http :port]))
       (get-in from-yaml [:sqlite :file])
       (parse-supported-kinds* from-yaml)
-      (some-> (get from-yaml :max-content-length) long))))
+      (some-> (get from-yaml :max-content-length) long)
+      (some-> (get from-yaml :max-created-at-delta) long))))

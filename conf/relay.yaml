@@ -14,3 +14,8 @@ supported-kinds: ["0-5", "7", "40-49", "10000-19999" "20000-29999"]
 
 # Optional. If not specified, then content of any length is accepted.
 max-content-length: 1048576
+
+# Optional. If not specified, events with any created_at are permitted.
+# If specified, events with a created_at more than the current system's
+# epoch millis *plus* this delta will be accepted.
+max-created-at-delta: 2700

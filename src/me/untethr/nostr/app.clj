@@ -124,12 +124,24 @@
       (hk/send! ch
         (create-notice-message (str "Badly formed event id: " event-id))))))
 
+(defn- current-system-epoch-seconds
+  []
+  (/ (System/currentTimeMillis) 1000))
+
 (defn- reject-event-before-verify?
   "Before even verifying the event, can we determine that we'll reject it?
    This function returns nil for no rejection, otherwise it returns a short
    human-readable reason for the rejection."
-  [conf event-obj]
+  [^Conf conf event-obj]
   (cond
+    ;; only validate created_at if it's available as a number; the actual
+    ;; event verification step will fail for non-numeric or missing created_at.
+    (and
+      (:optional-max-created-at-delta conf)
+      (number? (:created_at event-obj))
+      (> (:created_at event-obj)
+        (+ (current-system-epoch-seconds) (:optional-max-created-at-delta conf))))
+    (format "event \"created_at\" too far in the future" (:created_at event-obj))
     ;; only validate kind if it's available as a number; the actual
     ;; event verification step will fail for non-numeric or missing kinds.
     (and
@@ -392,10 +404,11 @@
            ;; variable with a json array -- this is b/c we require the file,
            ;; even with variables, to be json-parseable
            (str/replace "\"${runtime.nips}\""
-             (write-str* [1, 2, 4, 11, 12, 15, 16, 20])))})
+             (write-str* [1, 2, 4, 11, 12, 15, 16, 20, 22])))})
 
 (def ^:private nostr-url "https://github.com/nostr-protocol/nostr")
 (def ^:private untethr-url "https://github.com/atdixon/me.untethr.nostr-relay")
+(def ^:private untethr-new-issue-url "https://github.com/atdixon/me.untethr.nostr-relay/issues/new")
 
 (defn- req->ip-address*
   [req]
@@ -436,8 +449,9 @@
                  " of <a target=\"_blank\" href=\"%s\">this flavor</a>."
                  "<p>Add me to your nostr client using: <pre>wss://%s</pre>"
                  "<p>Or, get to know me better: <pre>curl -H 'Accept: application/nostr+json' https://%s</pre>"
+                 "<p>Need a new feature? Found a bug? Tell us about it <a target=\"_blank\" href=\"%s\">here</a>."
                  "</body>")
-               nostr-url untethr-url the-hostname the-hostname)})))
+               nostr-url untethr-url the-hostname the-hostname untethr-new-issue-url)})))
 
 (defn- handler-q [^Conf conf db req]
   (let [parsed-body (or (some->> req :body slurp parse) [{}])
