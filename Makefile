@@ -28,3 +28,7 @@ run-uberjar:
 .PHONY: deploy-archive
 deploy-archive: clean uberjar
 	tar -czvf target/me.untethr.nostr-relay.tar.gz conf/* -C target me.untethr.nostr-relay.jar
+
+.PHONY: release
+release:
+	scripts/release.sh

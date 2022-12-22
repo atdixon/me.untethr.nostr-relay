@@ -14,6 +14,7 @@
     [me.untethr.nostr.store :as store]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.validation :as validation]
+    [me.untethr.nostr.version :as version]
     [me.untethr.nostr.write-thread :as write-thread]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs]
@@ -385,7 +386,10 @@
   {:status 200
    :headers {"Content-Type" "application/nostr+json"
              "Access-Control-Allow-Origin" "*"}
-   :body nip11-json})
+   :body (-> nip11-json
+           (str/replace "${runtime.version}" version/version)
+           (str/replace "${runtime.nips}"
+             (write-str* [1, 2, 4, 11, 12, 15, 16, 20])))})
 
 (def ^:private nostr-url "https://github.com/nostr-protocol/nostr")
 (def ^:private untethr-url "https://github.com/atdixon/me.untethr.nostr-relay")
