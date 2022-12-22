@@ -10,7 +10,7 @@ sqlite:
 # This is optional. If not specified, the relay will store events of any numeric
 # kind. Otherwise, the relay will (quietly) not store events not whitelisted
 # here.
-supported-kinds: ["0-5", "7", "40-49", "10000-19999" "20000-29999"]
+supported-kinds: ["0-5", "7", "40-49", "10000-19999", "20000-29999"]
 
 # Optional. If not specified, then content of any length is accepted.
 max-content-length: 1048576
