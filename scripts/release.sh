@@ -35,7 +35,9 @@ sed -i '' 's/"SNAPSHOT"/"'"${VERSION}"'"/g' src/me/untethr/nostr/version.clj
 
 make clean uberjar
 
-cp target/me.untethr.nostr-relay.jar \
+mv target/me.untethr.nostr-relay.jar \
   "target/me.untethr.nostr-relay-${VERSION}.jar"
 
 git checkout -- src/me/untethr/nostr/version.clj
+
+tar -czvf "target/me.untethr.nostr-relay-${VERSION}.tar.gz" conf/* -C target "target/me.untethr.nostr-relay-${VERSION}.jar"
