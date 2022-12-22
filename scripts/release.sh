@@ -40,4 +40,4 @@ mv target/me.untethr.nostr-relay.jar \
 
 git checkout -- src/me/untethr/nostr/version.clj
 
-tar -czvf "target/me.untethr.nostr-relay-${VERSION}.tar.gz" conf/* -C target "target/me.untethr.nostr-relay-${VERSION}.jar"
+tar -czvf "target/me.untethr.nostr-relay-${VERSION}.tar.gz" conf/* -C target "me.untethr.nostr-relay-${VERSION}.jar"
