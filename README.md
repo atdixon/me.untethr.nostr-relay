@@ -27,11 +27,9 @@ Edit `./conf/relay.yaml` to change port, file, etc.
 
 ### How to Deploy
 
-```
-$ make deploy-archive
-```
+Use a latest release from [releases](https://github.com/atdixon/me.untethr.nostr-relay/releases/).
 
-This will produce a `tar.gz` archive with these contents:
+A released `tar.gz` archive has these contents:
 
 ```
 me.untethr.nostr-relay.jar
@@ -56,6 +54,20 @@ This runs the relay on the port specified in `conf/relay.yaml` (default 9090).
 
 You'll want your users to hit a reverse proxy, configured to serve SSL traffic
 (wss://...) and proxy to the relay.
+
+If you're developing you can build a jar or deployment archive from latest 
+source, like so:
+
+
+```
+$ make uberjar
+```
+
+or
+
+```
+$ make deploy-archive
+```
 
 See [Deploy](./doc/deploy.md) for more information on how to run a real 
 deployment.
