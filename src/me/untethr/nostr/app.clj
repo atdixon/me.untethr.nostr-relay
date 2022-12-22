@@ -388,7 +388,10 @@
              "Access-Control-Allow-Origin" "*"}
    :body (-> nip11-json
            (str/replace "${runtime.version}" version/version)
-           (str/replace "${runtime.nips}"
+           ;; note: we replace the whole string including the runtime.nips
+           ;; variable with a json array -- this is b/c we require the file,
+           ;; even with variables, to be json-parseable
+           (str/replace "\"${runtime.nips}\""
              (write-str* [1, 2, 4, 11, 12, 15, 16, 20])))})
 
 (def ^:private nostr-url "https://github.com/nostr-protocol/nostr")

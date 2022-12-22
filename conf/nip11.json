@@ -3,7 +3,7 @@
   "description": "If I had more time, I would have written a shorter letter.",
   "pubkey": "<your-pubkey-here>",
   "contact": "<your-contact-here>",
-  "supported_nips": ${runtime.nips},
+  "supported_nips": "${runtime.nips}",
   "software": "https://github.com/atdixon/me.untethr.nostr-relay",
   "version": "${runtime.version}"
 }

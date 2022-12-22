@@ -41,8 +41,9 @@ conf/nip11.json
 conf/logback.xml
 ```
 
-Unpack on server, update config files to your personal liking,
-and run (using java 11+):
+Unpack on server, update config files to your personal liking (note: leave
+the "supported_nips" and "version" as-is in the nip11.json file), and run 
+(using java 11+):
 
 ```
 $ java -Xms1g -Xmx1g \
