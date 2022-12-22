@@ -7,6 +7,10 @@ if [[ $(git status --porcelain) ]]; then
   exit 1
 fi
 
+# safety - we want to fail (via set -e) if version.clj doesn't look like it
+# restored from a previous release:
+grep "\"SNAPSHOT\"" src/me/untethr/nostr/version.clj
+
 read -rp 'Version: ' VERSION
 
 if [[ ! "${VERSION}" =~ ^[0-9]\.[0-9]\.[0-9]+$ ]]; then
@@ -33,3 +37,5 @@ make clean uberjar
 
 cp target/me.untethr.nostr-relay.jar \
   "target/me.untethr.nostr-relay-${VERSION}.jar"
+
+git checkout -- src/me/untethr/nostr/version.clj
