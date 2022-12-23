@@ -1,8 +1,30 @@
 ## me.untethr.nostr-relay
 
-A [nostr](https://github.com/fiatjaf/nostr/) relay, written in Clojure.
+A [nostr](https://github.com/fiatjaf/nostr/) relay, written in Clojure, backed by sqlite3.
 
-### Run
+**Supported NIPs**: [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md),
+[NIP-02](https://github.com/nostr-protocol/nips/blob/master/02.md),
+[NIP-04](https://github.com/nostr-protocol/nips/blob/master/04.md),
+[NIP-11](https://github.com/nostr-protocol/nips/blob/master/11.md),
+[NIP-12](https://github.com/nostr-protocol/nips/blob/master/12.md),
+[NIP-15](https://github.com/nostr-protocol/nips/blob/master/15.md),
+[NIP-16](https://github.com/nostr-protocol/nips/blob/master/16.md),
+[NIP-20](https://github.com/nostr-protocol/nips/blob/master/20.md),
+[NIP-22](https://github.com/nostr-protocol/nips/blob/master/22.md)
+
+
+**Coming Soon**: [NIP-09](https://github.com/nostr-protocol/nips/blob/master/09.md),
+[NIP-26](https://github.com/nostr-protocol/nips/blob/master/26.md),
+[NIP-33](https://github.com/nostr-protocol/nips/blob/a1cda4137060515dfba2ae76e9b82986f2e53c3c/33.md),
+[NIP-35](https://github.com/nostr-protocol/nips/blob/master/35.md),
+[NIP-40](https://github.com/nostr-protocol/nips/blob/master/40.md)
+
+### Project Goals
+
+* solid [nips](https://github.com/nostr-protocol/nips) coverage &amp; data completeness + accuracy
+* speed and performance on modest hardware
+
+### Run Locally
 
 For a [real deployment](#how-to-deploy), you'll want to deploy with ssl 
 termination (e.g. using [ngnix](https://www.nginx.com/)) but for local testing, 
