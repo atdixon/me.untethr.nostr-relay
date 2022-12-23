@@ -68,23 +68,45 @@ WantedBy=multi-user.target
 
 And ran:
 
-```
-sudo systemctl daemon-reload
-sudo systemctl enable nostr-relay.service
-sudo systemctl start nostr-relay
-sudo systemctl status nostr-relay
+```shell
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable nostr-relay.service
+$ sudo systemctl start nostr-relay
+$ sudo systemctl status nostr-relay
 ```
 
 Now, 2 ways to look at logs.
 
 * Relay server logs:
 
-```
+```shell
 /home/aaron$ tail -f logs/nostr-relay-<latest>.log
 ```
 
 * systemd service logs &mdash; this will show uncaught errors, due to bad requests or other issues, etc:
 
+```shell
+$ journalctl -u nostr-relay -f -o cat
 ```
-journalctl -u nostr-relay -f -o cat
+
+You can query for server metrics:
+
+```shell
+$ curl https://<relay-host>/metrics
+```
+
+And issue basic non-websocket queries over your relay's data:
+
+```shell
+$ curl https://<your-relay-host>/q
+
+# basic query param filters like these are convenient from a browser
+$ curl <your-relay-host>/q?until=now
+
+$ curl <your-relay-host>/q?author=aff9a9f017f32b2e8b60754a4102db9d9cf9ff2b967804b50e070780aa45c9a8
+
+# using more complex nostr filters in the request body
+$ curl -H 'Content-Type: application/json' \
+  -XGET <your-relay-host>/q \
+  --data '[{"authors":["aff9a9f017f32b2e8b60754a4102db9d9cf9ff2b967804b50e070780aa45c9a8"]}]'
 ```

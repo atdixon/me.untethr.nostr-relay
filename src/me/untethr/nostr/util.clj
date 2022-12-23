@@ -1,5 +1,9 @@
 (ns me.untethr.nostr.util)
 
+(defn current-system-epoch-seconds
+  []
+  (long (/ (System/currentTimeMillis) 1000)))
+
 (defn dissoc-in-if-empty
   [m ks]
   (let [v (get-in m ks)]

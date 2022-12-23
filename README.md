@@ -40,7 +40,7 @@ conf/logback.xml
 ```
 
 Unpack on server, update config files to your personal liking (note: leave
-the "supported_nips" and "version" as-is in the nip11.json file), and run 
+the "supported_nips" and "version" as-is in the `nip11.json` file), and run 
 (using java 11+):
 
 ```
@@ -53,9 +53,17 @@ $ java -Xms1g -Xmx1g \
 This runs the relay on the port specified in `conf/relay.yaml` (default 9090).
 
 You'll want your users to hit a reverse proxy, configured to serve SSL traffic
-(wss://...) and proxy to the relay.
+(wss://...) and proxy to the relay server.
 
-If you're developing you can build a jar or deployment archive from latest 
+See [Deploy](./doc/deploy.md) for more information on how to run a real 
+deployment.
+
+### Develop
+
+The best place to start reading the code is from the `-main` method in the
+well-documented [me.untethr.nostr.app](./src/me/untethr/nostr/app.clj) namespace.
+
+If you're developing you can build a jar or deployment archive from latest
 source, like so:
 
 
@@ -68,6 +76,3 @@ or
 ```
 $ make deploy-archive
 ```
-
-See [Deploy](./doc/deploy.md) for more information on how to run a real 
-deployment.

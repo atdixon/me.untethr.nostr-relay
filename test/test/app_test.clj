@@ -39,38 +39,38 @@
 
 (deftest prepare-req-filters*-test
   (let [conf (make-test-conf)]
-    (is (= [] (#'app/prepare-req-filters* conf [])))
-    (is (= [] (#'app/prepare-req-filters* conf [{:authors []}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{} {}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{} {} {:authors []}])))
+    (is (= [] (#'app/prepare-req-filters conf [])))
+    (is (= [] (#'app/prepare-req-filters conf [{:authors []}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{} {}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{} {} {:authors []}])))
     (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}])))
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}])))
     (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]}])))
     (is (= [{} {:authors [support/fake-hex-str]} {:authors [support/fake-hex-str] :kinds [1 2 3]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]
                                              :kinds [1 2 3]}]))))
   (let [conf (make-test-conf ["1-2"] nil)]
-    (is (= [] (#'app/prepare-req-filters* conf [])))
-    (is (= [] (#'app/prepare-req-filters* conf [{:authors []}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{} {}])))
-    (is (= [{}] (#'app/prepare-req-filters* conf [{} {} {:authors []}])))
+    (is (= [] (#'app/prepare-req-filters conf [])))
+    (is (= [] (#'app/prepare-req-filters conf [{:authors []}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{} {}])))
+    (is (= [{}] (#'app/prepare-req-filters conf [{} {} {:authors []}])))
     (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}])))
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}])))
     (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]}])))
     (is (= [{} {:authors [support/fake-hex-str]} {:authors [support/fake-hex-str] :kinds [1 2 3]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]
                                              :kinds [1 2 3]}])))
     ;; note: here if none of the kinds a filter references supports, the filter is removed:
     (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters* conf [{} {} {:authors [support/fake-hex-str]}
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
                                             {:authors [support/fake-hex-str]
                                              :kinds [3 4]}])))))
 

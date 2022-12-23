@@ -4,7 +4,8 @@
             [clojure.tools.logging :as log]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
-  (:import (org.sqlite SQLiteException)))
+  (:import (javax.sql DataSource)
+           (org.sqlite SQLiteException)))
 
 (def get-datasource*
   (memoize
@@ -37,7 +38,7 @@
           (throw e))))))
 
 (defn init!
-  [path]
+  ^DataSource [path]
   (doto (get-datasource* path)
     apply-schema!))
 
