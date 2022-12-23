@@ -28,6 +28,7 @@
 
 (def parse json-facade/parse)
 (def write-str* json-facade/write-str*)
+(def current-system-epoch-seconds util/current-system-epoch-seconds)
 
 (defn- calc-event-id
   [{:keys [pubkey created_at kind tags content]}]
