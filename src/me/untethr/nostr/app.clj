@@ -20,7 +20,8 @@
     [org.httpkit.server :as hk]
     [ring.middleware.params]
     [reitit.ring :as ring])
-  (:import (java.nio.charset StandardCharsets)
+  (:import (com.codahale.metrics MetricRegistry)
+           (java.nio.charset StandardCharsets)
            (java.util UUID)
            (java.io File)
            (javax.sql DataSource)
@@ -582,8 +583,7 @@
 (defn go!
   "Start the server and sleep forever, blocking the main process thread."
   [^Conf conf nip05-json nip11-json]
-  (let [^DataSource db (store/init! (:sqlite-file conf))
-        ;; This is our subscription registry, stored in an atom for concurrent
+  (let [;; This is our subscription registry, stored in an atom for concurrent
         ;; access. All updates to this atom will be implementd in the subscribe
         ;; namespace.
         subs-atom (atom (subscribe/create-empty-subs))
@@ -599,12 +599,21 @@
         ;; any corresponding ongoing fulfillment for that id; or if the websocket
         ;; is closed, we kill any associated fulfillments).
         fulfill-atom (atom (fulfill/create-empty-registry))
+        ;; We have a cyclic dependency between our db/datasource and metric
+        ;; registry. (Mainly we want the metric registry to be able to query
+        ;; the db for max-rowid. But we also want our datasource to be able
+        ;; to report metrics.) So we use a holder volatile so the metrics
+        ;; registry can use it after it's been instantiated.
+        db-holder (volatile! nil)
         ;; We report various server metrics and expose them via http for
         ;; observability (we use https://metrics.dropwizard.io/ for this):
         metrics (metrics/create-metrics
-                  #(store/max-event-rowid db)
+                  #(if @db-holder
+                     (store/max-event-rowid @db-holder) -1)
                   #(subscribe/num-subscriptions subs-atom)
-                  #(subscribe/num-firehose-filters subs-atom))]
+                  #(subscribe/num-firehose-filters subs-atom))
+        ^DataSource db (store/init! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
+        _ (vreset! db-holder db)]
     ;; Run our ring-compatible httpkit server on the configured port. :max-ws
     ;; here is the max websocket message size.
     (hk/run-server

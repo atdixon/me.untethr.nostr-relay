@@ -4,12 +4,62 @@
             [clojure.tools.logging :as log]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
-  (:import (javax.sql DataSource)
+  (:import (com.codahale.metrics MetricRegistry)
+           (com.zaxxer.hikari HikariConfig HikariDataSource)
+           (com.zaxxer.hikari.metrics.dropwizard CodahaleMetricsTrackerFactory)
+           (javax.sql DataSource)
            (org.sqlite SQLiteException)))
+
+(defn- create-hikari-datasource
+  ^HikariDataSource [jdbc-url]
+  (HikariDataSource.
+    (doto (HikariConfig.)
+      (.setJdbcUrl jdbc-url)
+      ;; note: jdbc.next with-transaction disables and re-enables auto-commit
+      ;; before/after running the transaction.
+      (.setAutoCommit true)
+      ;; how long for a connection request to wait before throwing a SQLException
+      ;; from DataSource/getConnection (See also maximumPoolSize below)
+      (.setConnectionTimeout (* 15 1000)) ;; 15s.
+      ;; Setting 0 here means we never remove idle connections from the pool.
+      (.setIdleTimeout 0)
+      ;; See docs @ https://github.com/brettwooldridge/HikariCP
+      (.setKeepaliveTime (* 5 60 1000)) ;; 5 minutes.
+      ;; And at some point read,
+      ;;  https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing
+      (.setMaximumPoolSize 10)
+      ;; note: we leave .setMinimumIdle alone per docs recommendation.
+      ;; Setting 0 here means no maximum lifetime to a connection in the pool.
+      (.setMaxLifetime 0)
+      ;; note: we will leave .setValidationTimeout as default. it must be
+      ;; less than conn timeout. when HikariCP takes a connection from pool
+      ;; this is how long it's allowed to validate it before returning it
+      ;; from getConnection.
+      ;; Trying 15s for now for leakDetectionThreshold.
+      (.setLeakDetectionThreshold (* 15 1000))
+      )))
+
+(defn- create-connection-pool
+  "Create a connection pool. Our configuration here has all of our connections
+   living forever in a fixed-sized pool. While the pool may or may not give us
+   enormous benefit over a file-sys based db like sqlite, it's integration with
+   metrics gives us a ton of observability with what's happening with the db."
+  (^DataSource [jdbc-url]
+   (create-connection-pool jdbc-url nil))
+  (^DataSource [jdbc-url ^MetricRegistry metric-registry]
+   (let [the-pool (create-hikari-datasource jdbc-url)]
+     (when (some? metric-registry)
+       (.setMetricsTrackerFactory the-pool
+         (CodahaleMetricsTrackerFactory. metric-registry)))
+     the-pool)))
+
+(def get-unpooled-datasource*
+  (memoize
+    #(jdbc/get-datasource (str "jdbc:sqlite:" %))))
 
 (def get-datasource*
   (memoize
-    #(jdbc/get-datasource (str "jdbc:sqlite:" %))))
+    #(create-connection-pool (str "jdbc:sqlite:" %1) %2)))
 
 (defn- comment-line?
   [line]
@@ -27,6 +77,7 @@
           acc)))))
 
 (defn apply-schema! [db]
+  {:pre [(some? db)]}
   (doseq [statement (parse-schema)]
     (try
       (jdbc/execute-one! db [statement])
@@ -38,12 +89,12 @@
           (throw e))))))
 
 (defn init!
-  ^DataSource [path]
-  (doto (get-datasource* path)
+  ^DataSource [path ^MetricRegistry metric-registry]
+  (doto (get-datasource* path metric-registry)
     apply-schema!))
 
 (comment
-  (init! "./n.db"))
+  (init! "./n.db" nil))
 
 ;; --
 
