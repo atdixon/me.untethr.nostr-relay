@@ -30,10 +30,11 @@
    ^Timer unsubscribe-all-timer
    ^Counter subscribe-excessive-filters-counter
    ^Timer fulfillment-timer
+   ^Timer fulfillment-overall-timer
    ^Histogram fulfillment-num-rows
    ^Counter fulfillment-interrupt
    ^Counter fulfillment-error
-   ^Counter fulfillment-active-counter
+   ^Counter fulfillment-active-threads-counter
    ])
 
 (defn create-jackson-metrics-module
@@ -48,13 +49,15 @@
 
 (defn create-metrics
   ([] ;; arity for testing
-   (create-metrics (constantly -1) (constantly -1) (constantly -1)))
-  ([quick-row-count-fn num-subscriptions-fn num-firehose-filters-fn]
+   (create-metrics (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1)))
+  ([quick-row-count-fn num-subscriptions-fn num-filter-prefixes-fn num-firehose-filters-fn num-fulfillments-fn]
    (let [codahale (new-registry)]
      (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
      (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
      (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
+     (gauge-fn codahale ["app" "subscribe" "active-filter-prefixes"] num-filter-prefixes-fn)
      (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)
+     (gauge-fn codahale ["app" "subscribe" "fulfillment-active"] num-fulfillments-fn)
      (->Metrics
        codahale
        (counter codahale ["app" "websocket" "active"])
@@ -74,10 +77,11 @@
        (timer codahale ["app" "event" "unsubscribe-all"])
        (counter codahale ["app" "subscribe" "excessive-filter-count"])
        (timer codahale ["app" "subscribe" "fulfillment"])
+       (timer codahale ["app" "subscribe" "fulfillment-overall"])
        (histogram codahale ["app" "subscribe" "fulfillment-num-rows"])
        (meter codahale ["app" "subscribe" "fulfillment-interrupt"])
        (meter codahale ["app" "subscribe" "fulfillment-error"])
-       (counter codahale ["app" "subscribe" "fulfillment-active"])))))
+       (counter codahale ["app" "subscribe" "fulfillment-active-threads"])))))
 
 (defn websocket-open!
   [metrics]
@@ -141,13 +145,21 @@
   [metrics]
   (inc! (:subscribe-excessive-filters-counter metrics)))
 
+(defn update-overall-fullfillment-millis!
+  [metrics millis]
+  (.update ^Timer (:fulfillment-overall-timer metrics) millis TimeUnit/MILLISECONDS))
+
 (defmacro time-fulfillment!
   [metrics & body]
   `(time!
      (:fulfillment-timer ~metrics)
-     (inc! (:fulfillment-active-counter ~metrics))
-     ~@body
-     (dec! (:fulfillment-active-counter ~metrics))))
+     (inc! (:fulfillment-active-threads-counter ~metrics))
+     (try
+       ~@body
+       (catch Throwable t#
+         (throw t#))
+       (finally
+         (dec! (:fulfillment-active-threads-counter ~metrics))))))
 
 (defn fulfillment-num-rows!
   [metrics n]

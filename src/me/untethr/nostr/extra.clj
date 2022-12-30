@@ -68,16 +68,17 @@
        --data '[{\"authors\":[\"<pubkey>\"]}]'
    "
   [^Conf conf db prepare-req-filters-fn req]
-  (let [query-params-as-filter (some-> req :query-params query-params->filter)
+  (let [overall-start-nanos (System/nanoTime)
+        query-params-as-filter (some-> req :query-params query-params->filter)
         body-as-filters (some->> req :body slurp not-empty json-facade/parse)
         use-filters (or (some-> query-params-as-filter vector) body-as-filters [{}])
         _ (validate-filters! use-filters)
         prepared-filters (prepare-req-filters-fn conf use-filters)
-        ;; default limit to 25 if unspecified, but don't let limit exceed 100:
-        modified-filters (mapv #(update % :limit (fn [a b] (min (or a b) 100)) 25) prepared-filters)
-        as-query (query/filters->query modified-filters)]
-    (let [rows (jdbc/execute! db as-query
+        as-query (query/filters->query prepared-filters :overall-limit 100)]
+    (let [query-start-nanos (System/nanoTime)
+          rows (jdbc/execute! db as-query
                  {:builder-fn rs/as-unqualified-lower-maps})
+          query-duration-millis (util/nanos-to-millis (- (System/nanoTime) query-start-nanos))
           rows' (mapv
                   (fn [row]
                     (let [parsed-event (-> row :raw_event json-facade/parse)]
@@ -93,13 +94,18 @@
                                      the-summary (if needs-summary?
                                                    (subs the-content 0 max-summary-len) the-content)
                                      suffix (if needs-summary? "..." "")]
-                                 (str the-summary suffix)))))) rows)]
+                                 (str the-summary suffix)))))) rows)
+          json-of-used-filters (json-facade/write-str* use-filters)
+          results-str (if (empty? rows')
+                        "No results."
+                        (with-out-str
+                          (pprint/print-table
+                            [:rowid :kind :pubkey :content] rows')))
+          overall-duration-millis (util/nanos-to-millis (- (System/nanoTime) overall-start-nanos))]
       {:status 200
        :headers {"Content-Type" "text/plain"}
-       :body (format "filters: %s%n%s"
-               (json-facade/write-str* use-filters)
-               (if (empty? rows')
-                 "No results."
-                 (with-out-str
-                   (pprint/print-table
-                     [:rowid :kind :pubkey :content] rows'))))})))
+       :body (format "filters: %s elapsed: %d/%dms (query/overall)%n%s"
+               json-of-used-filters
+               query-duration-millis
+               overall-duration-millis
+               results-str)})))

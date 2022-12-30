@@ -8,6 +8,7 @@
   org.xerial/sqlite-jdbc {:mvn/version "3.40.0.0"}
   com.github.seancorfield/next.jdbc {:mvn/version "1.3.847"}
   com.zaxxer/HikariCP {:mvn/version "5.0.1"}
+  p6spy/p6spy {:mvn/version "3.9.1"}
 
   fr.acinq.secp256k1/secp256k1-kmp {:mvn/version "0.7.0"}
   fr.acinq.secp256k1/secp256k1-kmp-jni-jvm {:mvn/version "0.7.0"}
@@ -23,7 +24,12 @@
   metrics-clojure-jvm/metrics-clojure-jvm {:mvn/version "2.10.0"}
   io.dropwizard.metrics/metrics-json {:mvn/version "4.2.15"}
 
+  ;; we expect tools.logging to find and leverage slf4j-api from the classpath,
+  ;; which we, in turn, expect to use logback-classic impl on the classpath.
+  ;; notable: we also configure p6spy to leverage slf4j, and so expect to
+  ;; get rolling file appender of p6spy logs via logback config.
   org.clojure/tools.logging {:mvn/version "1.2.4"}
+  org.slf4j/slf4j-api {:mvn/version "2.0.6"}
   ch.qos.logback/logback-classic {:mvn/version "1.4.5"}}
 
  :aliases

@@ -8,7 +8,14 @@
 
 (def ^:private hex-chars "abcdef0123456789")
 
-(def fake-hex-str (apply str (take 32 (cycle hex-chars))))
+(def fake-hex-64-str (apply str (take 64 (cycle hex-chars))))
+
+(defn random-hex-str
+  ([] (random-hex-str 64))
+  ([len]
+   (apply str
+     (take len
+       (repeatedly #(nth hex-chars (rand-int (count hex-chars))))))))
 
 (defmacro with-memory-db
   [bindings & body]

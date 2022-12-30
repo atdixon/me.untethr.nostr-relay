@@ -8,7 +8,10 @@
             [me.untethr.nostr.metrics :as metrics]
             [me.untethr.nostr.query :as query]
             [me.untethr.nostr.util :as util])
-  (:import (java.util.concurrent Executors ThreadFactory ExecutorService Future)))
+  (:import (java.util.concurrent CompletableFuture Executors ThreadFactory ExecutorService Future)))
+
+(def ^:private batch-size 30)
+(def ^:private num-fulfillment-threads 1)
 
 (defrecord FulfillHandle
   [^Future fut cancelled?-vol])
@@ -19,7 +22,7 @@
 
 (defn create-pool
   ^ExecutorService []
-  (Executors/newFixedThreadPool 50
+  (Executors/newFixedThreadPool num-fulfillment-threads
     (reify ThreadFactory
       (newThread [_this r]
         (doto (Thread. ^Runnable r)
@@ -31,8 +34,8 @@
   []
   (->Registry {} {}))
 
-(defn- do-fulfill
-  [metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback]
+(defn- fulfill-entirely!
+  [metrics db channel-id req-id cancelled?-vol filters target-row-id observer completion-callback]
   (try
     (let [tally (volatile! 0)]
       (metrics/time-fulfillment! metrics
@@ -47,13 +50,14 @@
             (when @cancelled?-vol
               (metrics/mark-fulfillment-interrupt! metrics)
               (reduced :cancelled)))
-          (jdbc/plan db (query/filters->query filters target-row-id))))
+          (jdbc/plan db (query/filters->query filters :target-row-id target-row-id))))
       (when-not @cancelled?-vol
-        (eose-callback)
+        (completion-callback)
         (metrics/fulfillment-num-rows! metrics @tally)))
     (catch Exception e
       (metrics/mark-fulfillment-error! metrics)
-      (log/error e "unexpected" {:channel-id channel-id :req-id req-id :filters filters}))))
+      (log/error e "unexpected in fulfill-entirely!"
+        {:channel-id channel-id :req-id req-id :filters filters}))))
 
 (defn synchronous!!
   "In most cases we'll want to use `submit!` fn for asynchronous fulfillment. However,
@@ -61,32 +65,103 @@
    are expected to answer quickly. Use with care!"
   [metrics db channel-id req-id filters target-row-id observer eose-callback]
   (let [cancelled?-vol (volatile! false)]
-    (do-fulfill metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
+    (fulfill-entirely! metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
+
+(defn- add-to-registry!
+  [fulfill-atom channel-id sid ^Future fut cancelled?-vol]
+  (try
+    (swap! fulfill-atom
+      (fn [registry]
+        ;; significant: we track futures so we can cancel them in case of
+        ;; abrupt subscription cancellations, but we don't actively remove
+        ;; them from our registry when fulfillment is complete; `cancel!`
+        ;; et al is expected to purge them from registry so we won't have
+        ;; leaked memory when websockets close; otherwise we are completely
+        ;; okay for them to stick around as zombies while corresponding
+        ;; subscription is still alive.
+        (-> registry
+          (update-in [:channel-id->sids channel-id] (fnil conj #{}) sid)
+          (assoc-in [:sid->future-handle sid] (->FulfillHandle fut cancelled?-vol)))))
+    (catch Exception e
+      (log/error e "unexpected in update-registry!")
+      (vreset! cancelled?-vol true)
+      (.cancel fut false)
+      (throw e))))
 
 (defn submit!
-  [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  ^Future [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
         f (.submit global-pool
-            ^Runnable (partial do-fulfill metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback))]
-    (try
-      (swap! fulfill-atom
-        (fn [registry]
-          ;; significant: we track futures so we can cancel them in case of
-          ;; abrupt subscription cancellations, but we don't actively remove
-          ;; them from our registry when fulfillment is complete; `cancel!`
-          ;; et al is expected to purge them from registry so we won't have
-          ;; leaked memory when websockets close; otherwise we are completely
-          ;; okay for them to stick around as zombies while corresponding
-          ;; subscription is still alive.
-          (-> registry
-            (update-in [:channel-id->sids channel-id] (fnil conj #{}) sid)
-            (assoc-in [:sid->future-handle sid] (->FulfillHandle f cancelled?-vol)))))
-      f
-      (catch Exception e
-        (vreset! cancelled?-vol true)
-        (.cancel f false)
-        (throw e)))))
+            ^Runnable (partial fulfill-entirely! metrics db channel-id req-id
+                        cancelled?-vol filters target-row-id observer eose-callback))]
+    (add-to-registry! fulfill-atom channel-id sid f cancelled?-vol)
+    f))
+
+(defn submit-use-batching!
+  ^Future [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  (let [start-nanos (System/nanoTime)
+        sid (str channel-id ":" req-id)
+        cancelled?-vol (volatile! false)
+        ^CompletableFuture result-future (CompletableFuture.)
+        ^Runnable batch-fn
+        (fn batch-fn [use-target-row-id]
+          (let [query-plan (jdbc/plan db
+                             (query/filters->query filters
+                               :target-row-id use-target-row-id
+                               :overall-limit batch-size))
+                ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
+                ;; consider alternative: look into if we could somehow truly batch websocket events
+                ;; back to clients?
+                [result-count min-rowid] (try
+                                           (metrics/time-fulfillment! metrics
+                                             (transduce
+                                               ;; note: if observer throws exception we catch below and for
+                                               ;; now call it unexpected
+                                               (map #(when-not @cancelled?-vol
+                                                       (observer (:raw_event %))
+                                                       (:rowid %)))
+                                               (completing
+                                                 (fn
+                                                   [[running-count min-rowid] row-rowid]
+                                                   (if @cancelled?-vol
+                                                     (do
+                                                       (metrics/mark-fulfillment-interrupt! metrics)
+                                                       (reduced :cancelled))
+                                                     [(inc running-count)
+                                                      (if min-rowid
+                                                        (min min-rowid row-rowid)
+                                                        row-rowid)])))
+                                               [0 nil] ;; [<count> <min-rowid>]
+                                               query-plan))
+                                           (catch Exception e
+                                             (log/error e "unexpected from batched transduce")
+                                             (metrics/mark-fulfillment-error! metrics)
+                                             (.completeExceptionally result-future e)))]
+            (if (< result-count batch-size)
+              (try
+                (eose-callback)
+                (.complete result-future :success)
+                (metrics/update-overall-fullfillment-millis! metrics
+                  (util/nanos-to-millis (- (System/nanoTime) start-nanos)))
+                (catch Exception e
+                  (log/error e "failed on eose-callback")
+                  (metrics/mark-fulfillment-error! metrics)
+                  (.completeExceptionally result-future e)))
+              (try
+                (.submit global-pool ^Runnable (partial batch-fn (dec min-rowid)))
+                (catch Exception e
+                  (log/error e "failed to re-submit")
+                  (metrics/mark-fulfillment-error! metrics)
+                  (.completeExceptionally result-future e))))))
+        f (try
+            (.submit global-pool ^Runnable (partial batch-fn target-row-id))
+            (catch Exception e
+              (log/error e "failed to submit")
+              (metrics/mark-fulfillment-error! metrics)
+              (.completeExceptionally result-future e)))]
+    (add-to-registry! fulfill-atom channel-id sid result-future cancelled?-vol)
+    result-future))
 
 (defn- cancel!* [registry channel-id sid]
   (-> registry
@@ -110,3 +185,16 @@
   [fulfill-atom channel-id]
   (doseq [sid (get-in @fulfill-atom [:channel-id->sids channel-id])]
     (cancel-sid! fulfill-atom channel-id sid)))
+
+(defn num-active-fulfillments
+  [fulfill-atom]
+  (let [snapshot @fulfill-atom]
+    (reduce
+      (fn [acc [_channel-id sids]]
+        (+ acc
+          (count
+            (filter
+              #(not (.isDone (get-in snapshot [:sid->future-handle % :fut])))
+              sids))))
+      0
+      (:channel-id->sids snapshot))))

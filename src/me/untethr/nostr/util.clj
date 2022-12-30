@@ -12,3 +12,7 @@
         (dissoc m (peek ks))
         (update-in m (butlast ks) dissoc (last ks)))
       m)))
+
+(defn nanos-to-millis
+  [nanos]
+  (long (/ nanos 1000000)))

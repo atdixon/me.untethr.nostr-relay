@@ -25,15 +25,15 @@
   (is (not (#'app/fulfill-synchronously? [])))
   (is (not (#'app/fulfill-synchronously? [{}])))
   (is (not (#'app/fulfill-synchronously? [{:authors []}])))
-  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-64-str]
                                            :kinds [1 2 3]}])))
   (is (not (#'app/fulfill-synchronously? [{:limit 2}])))
-  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+  (is (not (#'app/fulfill-synchronously? [{:authors [support/fake-hex-64-str]
                                            :kinds [1 2 3]
                                            :limit 2}])))
   (is (#'app/fulfill-synchronously? [{:limit 1}]))
   (is (#'app/fulfill-synchronously? [{:authors [] :limit 1}]))
-  (is (#'app/fulfill-synchronously? [{:authors [support/fake-hex-str]
+  (is (#'app/fulfill-synchronously? [{:authors [support/fake-hex-64-str]
                                       :kinds [1 2 3]
                                       :limit 1}])))
 
@@ -44,14 +44,14 @@
     (is (= [{}] (#'app/prepare-req-filters conf [{}])))
     (is (= [{}] (#'app/prepare-req-filters conf [{} {}])))
     (is (= [{}] (#'app/prepare-req-filters conf [{} {} {:authors []}])))
-    (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}])))
-    (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
-                                            {:authors [support/fake-hex-str]}])))
-    (is (= [{} {:authors [support/fake-hex-str]} {:authors [support/fake-hex-str] :kinds [1 2 3]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
-                                            {:authors [support/fake-hex-str]
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}])))
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                            {:authors [support/fake-hex-64-str]}])))
+    (is (= [{} {:authors [support/fake-hex-64-str]} {:authors [support/fake-hex-64-str] :kinds [1 2 3]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                            {:authors [support/fake-hex-64-str]
                                              :kinds [1 2 3]}]))))
   (let [conf (make-test-conf ["1-2"] nil)]
     (is (= [] (#'app/prepare-req-filters conf [])))
@@ -59,19 +59,19 @@
     (is (= [{}] (#'app/prepare-req-filters conf [{}])))
     (is (= [{}] (#'app/prepare-req-filters conf [{} {}])))
     (is (= [{}] (#'app/prepare-req-filters conf [{} {} {:authors []}])))
-    (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}])))
-    (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
-                                            {:authors [support/fake-hex-str]}])))
-    (is (= [{} {:authors [support/fake-hex-str]} {:authors [support/fake-hex-str] :kinds [1 2 3]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
-                                            {:authors [support/fake-hex-str]
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}])))
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                            {:authors [support/fake-hex-64-str]}])))
+    (is (= [{} {:authors [support/fake-hex-64-str]} {:authors [support/fake-hex-64-str] :kinds [1 2 3]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                            {:authors [support/fake-hex-64-str]
                                              :kinds [1 2 3]}])))
     ;; note: here if none of the kinds a filter references supports, the filter is removed:
-    (is (= [{} {:authors [support/fake-hex-str]}]
-          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-str]}
-                                            {:authors [support/fake-hex-str]
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                            {:authors [support/fake-hex-64-str]
                                              :kinds [3 4]}])))))
 
 (deftest rejected-event-test
@@ -161,7 +161,7 @@
                       subscribe/notify! (fn [& _] (swap! result-atom conj :notified))]
           (is (= [:stored* :notified]
                 (invoke-sut! (make-event "10" "pk0" 10 1))))
-          (is (= [:duplicate :notified]
+          (is (= [:duplicate] ;; *not* :notified if duplicate
                 (invoke-sut! (make-event "10" "-pk0" -10 -1 :p# ["pkX"]))))
           (doseq [ephemeral-kind [29999 20000]
                   :let [event-obj (make-event "20" "pk0" 20 ephemeral-kind :p# ["pkX"])]]
@@ -201,12 +201,12 @@
                       (select-keys [:pubkey :created_at])))))
             ;; last check over all data written by this test -- we're passing
             ;; through a lot of integrative pieces here:
-            (let [q (query/filters->query [{}] nil)]
+            (let [q (query/filters->query [{}])]
               (is (= ["10" (make-id 20 19999) (make-id 20 10000)]
                     (mapv (comp :id #'app/parse :raw_event)
                       (jdbc/execute! db q
                         {:builder-fn rs/as-unqualified-lower-maps})))))
-            (let [q (query/filters->query [{:#p ["pkX"]}] nil)]
+            (let [q (query/filters->query [{:#p ["pkX"]}])]
               (is (= [(make-id 20 19999) (make-id 20 10000)]
                     (mapv (comp :id #'app/parse :raw_event)
                       (jdbc/execute! db q

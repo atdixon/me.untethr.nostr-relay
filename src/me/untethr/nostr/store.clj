@@ -5,10 +5,15 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs])
   (:import (com.codahale.metrics MetricRegistry)
+           (com.p6spy.engine.spy P6DataSource)
            (com.zaxxer.hikari HikariConfig HikariDataSource)
            (com.zaxxer.hikari.metrics.dropwizard CodahaleMetricsTrackerFactory)
            (javax.sql DataSource)
            (org.sqlite SQLiteException)))
+
+(defn- wrap-datasource-with-p6spy
+  [^DataSource datasource]
+  (P6DataSource. datasource))
 
 (defn- create-hikari-datasource
   ^HikariDataSource [jdbc-url]
@@ -27,6 +32,9 @@
       (.setKeepaliveTime (* 5 60 1000)) ;; 5 minutes.
       ;; And at some point read,
       ;;  https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing
+      ;; In any case, we're aiming for *more* than the number of threads we
+      ;; allocate that can acquire a db connection, so that we're never unable
+      ;; to acquire...
       (.setMaximumPoolSize 10)
       ;; note: we leave .setMinimumIdle alone per docs recommendation.
       ;; Setting 0 here means no maximum lifetime to a connection in the pool.
@@ -36,8 +44,7 @@
       ;; this is how long it's allowed to validate it before returning it
       ;; from getConnection.
       ;; Trying 15s for now for leakDetectionThreshold.
-      (.setLeakDetectionThreshold (* 15 1000))
-      )))
+      (.setLeakDetectionThreshold (* 15 1000)))))
 
 (defn- create-connection-pool
   "Create a connection pool. Our configuration here has all of our connections
@@ -59,7 +66,8 @@
 
 (def get-datasource*
   (memoize
-    #(create-connection-pool (str "jdbc:sqlite:" %1) %2)))
+    #(wrap-datasource-with-p6spy
+       (create-connection-pool (str "jdbc:sqlite:" %1) %2))))
 
 (defn- comment-line?
   [line]

@@ -10,7 +10,7 @@
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.metrics :as metrics]
     [test.support :as support]
-    [test.test-data :as test-data])
+    [test.test-data :as test-data :refer [hx]])
   (:import (java.util List)))
 
 (defn- throw-fn
@@ -46,7 +46,7 @@
     ;; notify everything...
     (doseq [{obj-id :id :as obj} (:pool test-data/pool-with-filters)]
       (subscribe/notify! metrics-fake subs-atom obj (format "<fake-raw-event:%s>" obj-id)))
-    ;; verify...
+    ;; verify that we got notified fully and correctly...
     (doseq [[idx [filters expected-ids]]
             (map-indexed vector
               (:filters->results test-data/pool-with-filters))
@@ -57,28 +57,30 @@
         (is (= (set expected-raw-events)
               (set/intersection (set expected-raw-events) (set actual-raw-events)))
           filters)
-        (is (= expected-raw-events actual-raw-events) filters)))))
+        ;; note we reverse before making out comparison b/c pool lists results
+        ;; in reverse temporal order
+        (is (= expected-raw-events (reverse actual-raw-events)) filters)))))
 
 (deftest candidate-filters-test
   (let [subs-atom
         (doto (atom (subscribe/create-empty-subs))
-          (subscribe/subscribe! "chan0" "req0" [{:ids ["id0" "id1"] :authors ["pk0" "pk1"]}] throw-fn)
-          (subscribe/subscribe! "chan0" "req1" [{:#e ["id0"]} {:#e ["id1"]}] throw-fn)
+          (subscribe/subscribe! "chan0" "req0" [{:ids [(hx "ab0") (hx "ab1")] :authors [(hx "cd0") (hx "cd1")]}] throw-fn)
+          (subscribe/subscribe! "chan0" "req1" [{:#e [(hx "ab0")]} {:#e [(hx "ab1")]}] throw-fn)
           ;; note: here we subscribe with a >1 filter, which means that our private
           ;; candidate-filters can produce two filters with the same sid (channel:req-id)
-          (subscribe/subscribe! "chan0" "req2" [{:#p ["pk0" "pk1"]} {:#e ["id0" "id1"]} {:authors ["pk0"]}] throw-fn)
-          (subscribe/subscribe! "chan1" "req0" [{:#e ["id0" "id1"] :kinds [0 1]}] throw-fn)
+          (subscribe/subscribe! "chan0" "req2" [{:#p [(hx "cd0") (hx "cd1")]} {:#e [(hx "ab0") (hx "ab1")]} {:authors [(hx "cd0")]}] throw-fn)
+          (subscribe/subscribe! "chan1" "req0" [{:#e [(hx "ab0") (hx "ab1")] :kinds [0 1]}] throw-fn)
           (subscribe/subscribe! "chan1" "req1" [{:since 50 :until 100}] throw-fn))]
     (is (= {"chan0:req0" 1
             "chan1:req1" 1
             "chan0:req2" 1}
-          (frequencies (map :sid (#'subscribe/candidate-filters @subs-atom "id0" "pk0" [])))))
+          (frequencies (map :sid (#'subscribe/candidate-filters @subs-atom (hx "ab0") (hx "cd0") [])))))
     (is (= {"chan0:req0" 1
             "chan0:req1" 1
             "chan0:req2" 2 ;; !! candidate-filters can find two filters for the same subscription !!
             "chan1:req0" 1
             "chan1:req1" 1}
-          (frequencies (map :sid (#'subscribe/candidate-filters @subs-atom "id0" "pk0" [["e" "id0"]])))))))
+          (frequencies (map :sid (#'subscribe/candidate-filters @subs-atom (hx "ab0") (hx "cd0") [["e" (hx "ab0")]])))))))
 
 (deftest basic-subscribe-test
   (let [subs-atom (atom (subscribe/create-empty-subs))]
@@ -90,9 +92,9 @@
     (is (= @subs-atom (subscribe/create-empty-subs))))
   (let [subs-atom
         (doto (atom (subscribe/create-empty-subs))
-          (subscribe/subscribe! "chan0" "req0" [{:ids ["id0" "id1"]} {:authors ["pk0" "pk1"]}] throw-fn)
-          (subscribe/subscribe! "chan0" "req1" [{:#e ["id0 id1"]}] throw-fn)
-          (subscribe/subscribe! "chan0" "req2" [{:#p ["pk0" "pk1"]}] throw-fn))]
+          (subscribe/subscribe! "chan0" "req0" [{:ids [(hx "ab0") (hx "ab1")]} {:authors [(hx "cd0") (hx "cd1")]}] throw-fn)
+          (subscribe/subscribe! "chan0" "req1" [{:#e ["id0" "id1"]}] throw-fn)
+          (subscribe/subscribe! "chan0" "req2" [{:#p [(hx "cd0") (hx "cd1")]}] throw-fn))]
     (is (= 3 (subscribe/num-subscriptions subs-atom "chan0")))
     (is (= 4 (subscribe/num-filters subs-atom "chan0")))
     (subscribe/unsubscribe! subs-atom "chan0" "req1")
@@ -101,7 +103,71 @@
     (subscribe/unsubscribe-all! subs-atom "chan0")
     (is (= @subs-atom (subscribe/create-empty-subs)))))
 
+(deftest basic-unsubscribe-prefix-test
+  ;; the goal of this test is to ensure we don't leak any subscriptions after
+  ;; unsubscribes, including subscriptions that contain nip-01 prefix queries
+  (let [channel-pool (mapv #(str "chan" %) (range 5))
+        req-pool (mapv #(str "req" %) (range 5))
+        subs-atom (atom (subscribe/create-empty-subs))
+        create-many-subscriptions!
+        (fn []
+          (letfn [(test-subscribe [filters]
+                    (subscribe/subscribe! subs-atom
+                      (rand-nth channel-pool)
+                      (rand-nth req-pool)
+                      filters #(throw (ex-info "unexpected" {:x %}))))]
+            ;; fields that don't support prefix queries...
+            (test-subscribe [{}])
+            (test-subscribe [{:kinds [1 2]}])
+            (test-subscribe [{:since 1234}])
+            (test-subscribe [{:until 1234} {:since 1234}])
+            (test-subscribe [{:limit 5}])
+            (test-subscribe [{:#e ["abc"]}])
+            (test-subscribe [{:#p ["def"]}])
+            (test-subscribe [{:#t ["012"]}])
+            ;; now, fields that support prefix queries...
+            (test-subscribe [{:authors [(support/random-hex-str)]}])
+            (test-subscribe [{:authors [(support/random-hex-str)]}])
+            (test-subscribe [{:ids [(support/random-hex-str) (support/random-hex-str)]}])
+            (dotimes [len 64]
+              (test-subscribe [{:ids [(support/random-hex-str len)]}]))
+            (dotimes [len 64]
+              (test-subscribe [{:authors [(support/random-hex-str len)]}]))
+            (dotimes [len 64]
+              (test-subscribe [{:authors [(support/random-hex-str len) (support/random-hex-str len)]}
+                               {:ids [(support/random-hex-str len) (support/random-hex-str len)]}]))))]
+    (create-many-subscriptions!)
+    (is (> (subscribe/num-filters-prefixes subs-atom) 64))
+    (is (not= @subs-atom (subscribe/create-empty-subs)))
+    (doseq [chan channel-pool]
+      (doseq [req req-pool]
+        (subscribe/unsubscribe! subs-atom chan req))
+      (is (= 0 (subscribe/num-filters subs-atom chan)))
+      (is (= 0 (subscribe/num-subscriptions subs-atom chan))))
+    (is (= 0 (subscribe/num-subscriptions subs-atom)))
+    (is (= 0 (subscribe/num-firehose-filters subs-atom)))
+    (is (= 0 (subscribe/num-filters-prefixes subs-atom)))
+    (is (= @subs-atom (subscribe/create-empty-subs)))
+    (create-many-subscriptions!)
+    (is (> (subscribe/num-filters-prefixes subs-atom) 64))
+    (is (not= @subs-atom (subscribe/create-empty-subs)))
+    (doseq [chan channel-pool]
+      (subscribe/unsubscribe-all! subs-atom chan)
+      (is (= 0 (subscribe/num-filters subs-atom chan))))
+    (is (= 0 (subscribe/num-subscriptions subs-atom)))
+    (is (= 0 (subscribe/num-firehose-filters subs-atom)))
+    (is (= 0 (subscribe/num-filters-prefixes subs-atom)))
+    (is (= @subs-atom (subscribe/create-empty-subs)))))
+
 ;; --
+
+(def char-hex
+  (gen/fmap clojure.core/char
+    (gen/one-of [(gen/choose 48 57)
+                 (gen/choose 97 102)])))
+
+(def string-hex-64
+  (gen/fmap clojure.string/join (gen/vector char-hex 64)))
 
 (def filter-gen
   (gen/such-that
@@ -112,8 +178,8 @@
     (gen/fmap
       #(zipmap [:ids :authors :kinds :#e :#p :since :until] %)
       (gen/tuple
-        (gen/vector (gen/not-empty gen/string-ascii))
-        (gen/vector (gen/not-empty gen/string-ascii))
+        (gen/vector (gen/not-empty string-hex-64))
+        (gen/vector (gen/not-empty string-hex-64))
         (gen/vector (gen/choose 0 10))
         (gen/vector (gen/not-empty gen/string-ascii))
         (gen/vector (gen/not-empty gen/string-ascii))
@@ -174,8 +240,8 @@
   (let [gen (gen/fmap
               #(zipmap [:id :pubkey :created_at :kind :tags :content :sig] %)
               (gen/tuple
-                (gen/elements (if-empty ids ["any-id"]))
-                (gen/elements (if-empty authors ["any-pk"]))
+                (gen/elements (if-empty ids [(hx "abcd")]))
+                (gen/elements (if-empty authors [(hx "ef01")]))
                 (gen/choose (or since 0) (or until Long/MAX_VALUE))
                 (gen/elements (if-empty kinds [-1]))
                 (gen/let [es (gen/fmap (fn [lst] (map #(vector "e" %) lst))
@@ -220,7 +286,7 @@
                       (log/warn "got more than one result" {:seed seed}))
                     (some-> ^List (get @result-vol [chan-id req-id]) (.contains as-raw-event)))))
               filter-tuples)))]
-    (let [res (tc/quick-check 50 prop :seed seed)]
+    (let [res (tc/quick-check 25 prop :seed seed)]
       (is (:pass? res) (pr-str res)))))
 
 (deftest firehose-test

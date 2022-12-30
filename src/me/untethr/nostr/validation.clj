@@ -14,6 +14,12 @@
 (defn- hex-str? [s]
   (and (string? s) (re-matches #"[a-f0-9]{32,}" s)))
 
+(defn hex-str-64? [s] ;; public
+  (and (string? s) (re-matches #"[a-f0-9]{64}" s)))
+
+(defn- hex-str-64-or-prefix? [s]
+  (and (string? s) (re-matches #"[a-f0-9]{1,64}" s)))
+
 (defn- timestamp? [t]
   ;; note: we support negative timestamps here (as some clients in the wild
   ;; have sent them)
@@ -37,13 +43,13 @@
 
 (defn is-valid-id-form?
   [id]
-  (hex-str? id))
+  (hex-str-64? id))
 
 (defn event-err
   [{:keys [id pubkey created_at kind tags content sig] :as e}]
   (cond
     (not (is-valid-id-form? id)) :err/id
-    (not (hex-str? pubkey)) :err/pubkey
+    (not (hex-str-64? pubkey)) :err/pubkey
     (not (hex-str? sig)) :err/sig
     (not (timestamp? created_at)) :err/created-at
     (not (kind? kind)) :err/kind
@@ -69,13 +75,13 @@
 (defn filter-err
   [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as the-filter}]
   (cond
-    (not (every?* hex-str? ids)) :err/ids
+    (not (every?* hex-str-64-or-prefix? ids)) :err/ids
     (not (every?* kind? kinds)) :err/kinds
-    (not (every?* hex-str? e#)) :err/e#
-    (not (every?* hex-str? p#)) :err/p#
+    (not (every?* hex-str-64? e#)) :err/e#
+    (not (every?* hex-str-64? p#)) :err/p#
     (not (or (nil? since) (timestamp? since))) :err/since
     (not (or (nil? until) (timestamp? until))) :err/until
-    (not (every?* hex-str? authors)) :err/authors
+    (not (every?* hex-str-64-or-prefix? authors)) :err/authors
     (not (or (nil? limit) (nat-int? limit))) :err/limit
     (not (empty? (invalid-filter-keys the-filter))) :err/invalid-filter-keys))
 
@@ -86,7 +92,7 @@
     (nil? req-filters) nil
     :else (first (keep filter-err req-filters))))
 
-(def zero-hex-str (apply str (repeat 32 "0")))
+(def zero-hex-str (apply str (repeat 64 "0")))
 
 (defn filter-has-empty-attr?
   [the-filter]
@@ -104,13 +110,13 @@
   ;;     any for the good author refs
   (cond-> the-filter
     (not (empty? (:authors the-filter)))
-    (update :authors #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (update :authors #(mapv (fn [x] (if (hex-str-64-or-prefix? x) x zero-hex-str)) %))
     (not (empty? (:ids the-filter)))
-    (update :ids #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (update :ids #(mapv (fn [x] (if (hex-str-64-or-prefix? x) x zero-hex-str)) %))
     (not (empty? (:#e the-filter)))
-    (update :#e #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (update :#e #(mapv (fn [x] (if (hex-str-64? x) x zero-hex-str)) %))
     (not (empty? (:#p the-filter)))
-    (update :#p #(mapv (fn [x] (if (hex-str? x) x zero-hex-str)) %))
+    (update :#p #(mapv (fn [x] (if (hex-str-64? x) x zero-hex-str)) %))
     ;; (2) we've seen floats in the wild eg 1.671315671052E9
     (not (nil? (:since the-filter)))
     (update :since #(if (number? %) (long %) %))

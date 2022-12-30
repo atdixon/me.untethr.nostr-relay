@@ -28,7 +28,19 @@ alter table n_events
 --
 create index if not exists idx_event_id on n_events (id);
 --
+drop index if exists idx_event_id;
+--
+-- @see https://stackoverflow.com/a/58685072
+--
+create index if not exists idx_event_id_new on n_events (id collate nocase);
+--
 create index if not exists idx_pubkey on n_events (pubkey);
+--
+drop index if exists idx_pubkey;
+--
+-- @see https://stackoverflow.com/a/58685072
+--
+create index if not exists idx_pubkey_new on n_events (pubkey collate nocase);
 --
 create index if not exists idx_created_at on n_events (created_at);
 --

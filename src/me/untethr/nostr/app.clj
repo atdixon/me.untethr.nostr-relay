@@ -198,7 +198,8 @@
           (do
             ;; per https://github.com/nostr-protocol/nips/blob/master/20.md: "Ephemeral
             ;; events are not acknowledged with OK responses, unless there is a failure."
-            :no-op)
+            (metrics/time-notify-event! metrics
+              (subscribe/notify! metrics subs-atom event-obj raw-event)))
           :else
           ;; note: we are not at this point handling nip-16 replaceable events *in code*;
           ;; see https://github.com/nostr-protocol/nips/blob/master/16.md
@@ -214,12 +215,14 @@
             (fn [store-result]
               (if (identical? store-result :duplicate)
                 (handle-duplicate-event! metrics ch event-obj "duplicate")
-                (handle-stored-or-replaced-event! metrics ch event-obj "stored")))
+                (do
+                  (handle-stored-or-replaced-event! metrics ch event-obj "stored")
+                  ;; Notify subscribers only after we discover that the event is
+                  ;; not a duplicate.
+                  (metrics/time-notify-event! metrics
+                    (subscribe/notify! metrics subs-atom event-obj raw-event)))))
             (fn [^Throwable t]
-              (log/error t "while storing event" event-obj))))
-        ;; Notify subscribers without waiting on the async db write.
-        (metrics/time-notify-event! metrics
-          (subscribe/notify! metrics subs-atom event-obj raw-event)))
+              (log/error t "while storing event" event-obj)))))
       ;; event was invalid, per nip-20, we'll send make an indication that the
       ;; event did not get persisted (see
       ;; https://github.com/nostr-protocol/nips/blob/master/20.md)
@@ -373,7 +376,7 @@
                       (fulfill/synchronous!!
                         metrics db channel-id internal-req-id use-req-filters target-row-id
                         fulfillment-observer fulfillment-eose-callback)
-                      (fulfill/submit!
+                      (fulfill/submit-use-batching!
                         metrics db fulfill-atom channel-id internal-req-id use-req-filters target-row-id
                         fulfillment-observer fulfillment-eose-callback)))
                   ;; should only occur on epochal first event
@@ -448,7 +451,7 @@
   (log/debug 'ws-close uuid)
   ;; Update our metrics to close the websocket, recording also the duration of the
   ;; channel's lifespan.
-  (metrics/websocket-close! metrics (quot (- (System/nanoTime) start-ns) 1000000))
+  (metrics/websocket-close! metrics (util/nanos-to-millis (- (System/nanoTime) start-ns)))
   ;; We'll want to ensure that all subscriptions and associated state for the
   ;; websocket channel (uuid) are cleaned up and removed.
   (metrics/time-unsubscribe-all! metrics
@@ -611,7 +614,9 @@
                   #(if @db-holder
                      (store/max-event-rowid @db-holder) -1)
                   #(subscribe/num-subscriptions subs-atom)
-                  #(subscribe/num-firehose-filters subs-atom))
+                  #(subscribe/num-filters-prefixes subs-atom)
+                  #(subscribe/num-firehose-filters subs-atom)
+                  #(fulfill/num-active-fulfillments fulfill-atom))
         ^DataSource db (store/init! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
         _ (vreset! db-holder db)]
     ;; Run our ring-compatible httpkit server on the configured port. :max-ws

@@ -7,9 +7,11 @@
             [test.support :as support]
             [test.test-data :as test-data]))
 
-(defn- query* [db filters & [target-row-id]]
+(defn- query* [db filters & {:keys [target-row-id overall-limit]}]
   (mapv :rowid
-    (jdbc/execute! db (query/filters->query filters target-row-id)
+    (jdbc/execute! db (query/filters->query filters
+                        :target-row-id target-row-id
+                        :overall-limit overall-limit)
       {:builder-fn rs/as-unqualified-lower-maps})))
 
 (defn- row-id->id
@@ -28,11 +30,29 @@
         (pr-str [filters expected-results]))
       (is (= (count expected-results) (count query-results))
         (pr-str [filters query-results])))
+
+    ;; now, do same queries but leveraging overall-limit
+    (doseq [[filters expected-results] (:filters->results test-data/pool-with-filters)]
+      (dotimes [overall-limit (* 2 (count expected-results))]
+        (let [query-results (query* db filters :overall-limit overall-limit)]
+          (is (= (set (take overall-limit expected-results))
+                (into #{} (map (partial row-id->id db)) query-results))
+            (pr-str [filters overall-limit expected-results]))
+          (is (= (min (count expected-results) overall-limit) (count query-results))
+            (pr-str [filters overall-limit query-results])))))
+
     ;; with the well-known data set, let's test some w/ target-row-id..
     (is (= #{1 2 4} (-> (query* db
-                          [{:ids ["100" "101"]}
-                           {:#e ["100"]}
-                           {:#e ["102" "103"]}] 4) set)))))
+                          [{:ids (mapv test-data/hx ["100" "101"])}
+                           {:#e (mapv test-data/hx ["100"])}
+                           {:#e (mapv test-data/hx ["102" "103"])}]
+                          :target-row-id 4) set)))
+    (is (= #{4} (-> (query* db
+                      [{:ids (mapv test-data/hx ["100" "101"])}
+                       {:#e (mapv test-data/hx ["100"])}
+                       {:#e (mapv test-data/hx ["102" "103"])}]
+                      :target-row-id 4
+                      :overall-limit 1) set)))))
 
 (deftest regression-test
   (support/with-regression-data [data-vec]
