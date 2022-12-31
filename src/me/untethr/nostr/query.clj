@@ -57,14 +57,14 @@
                         (not-empty generic-tags) (conj join-x)))
         q (cond
             (empty? base-clause)
-            (format "select v.rowid, v.raw_event from n_events v" base-clause)
+            (format "select v.rowid, v.raw_event, v.created_at from n_events v" base-clause)
             (empty? join-clause)
-            (format "select v.rowid, v.raw_event from n_events v where %s" base-clause)
+            (format "select v.rowid, v.raw_event, v.created_at from n_events v where %s" base-clause)
             :else
-            (format "select v.rowid, v.raw_event from n_events v %s where %s" join-clause base-clause))
+            (format "select v.rowid, v.raw_event, v.created_at from n_events v %s where %s" join-clause base-clause))
         extra-clauses (cond-> []
                         (some? target-row-id) (conj (str "v.rowid <= " target-row-id))
-                        true (conj "deleted_ = 0"))
+                        true (conj "v.deleted_ = 0"))
         q (str q (if (empty? base-clause) " where " " and ") (str/join " and " extra-clauses))
         q (if (empty? join-clause) q (str q " group by v.rowid"))]
     (if (some? limit)
@@ -85,9 +85,14 @@
   ([filters] (filters->query filters nil))
   ([filters target-row-id]
    {:pre [(not-empty filters) (or (nil? target-row-id) (number? target-row-id))]}
-   (vec
-     (reduce
-       (fn [[q & p] [q+ & p+]]
-         (cons (if (nil? q) q+ (str q " union " q+)) (concat p p+)))
-       [nil]
-       (map #(filter->query % target-row-id) filters)))))
+   (let [compound-query
+         (vec
+           (reduce
+             (fn [[q & p] [q+ & p+]]
+               (cons (if (nil? q) q+ (str q " union " q+)) (concat p p+)))
+             [nil]
+             (map #(filter->query % target-row-id) filters)))]
+     (vec
+       (cons
+         (str (first compound-query) " order by created_at desc limit ?")
+         (concat (rest compound-query) [1000]))))))

@@ -202,12 +202,12 @@
             ;; last check over all data written by this test -- we're passing
             ;; through a lot of integrative pieces here:
             (let [q (query/filters->query [{}] nil)]
-              (is (= ["10" (make-id 20 19999) (make-id 20 10000)]
+              (is (= (vec (reverse ["10" (make-id 20 19999) (make-id 20 10000)]))
                     (mapv (comp :id #'app/parse :raw_event)
                       (jdbc/execute! db q
                         {:builder-fn rs/as-unqualified-lower-maps})))))
             (let [q (query/filters->query [{:#p ["pkX"]}] nil)]
-              (is (= [(make-id 20 19999) (make-id 20 10000)]
+              (is (= (vec (reverse [(make-id 20 19999) (make-id 20 10000)]))
                     (mapv (comp :id #'app/parse :raw_event)
                       (jdbc/execute! db q
                         {:builder-fn rs/as-unqualified-lower-maps})))))
@@ -217,7 +217,7 @@
                       (jdbc/execute! db q
                         {:builder-fn rs/as-unqualified-lower-maps})))))
             (let [q (query/filters->query [{:#z ["smasha"]}] nil)]
-              (is (= [(make-id 20 19999) (make-id 20 10000)]
+              (is (= (vec (reverse [(make-id 20 19999) (make-id 20 10000)]))
                     (mapv (comp :id #'app/parse :raw_event)
                       (jdbc/execute! db q
                         {:builder-fn rs/as-unqualified-lower-maps})))))))))))
