@@ -47,6 +47,14 @@
         <appender-ref ref="FILE"/>
     </root>
 
+    <!--
+    <logger name="org.eclipse.jetty.websocket.core.internal"
+            level="debug"
+            additivity="false">
+        <appender-ref ref="FILE"/>
+    </logger>
+    -->
+
     <!-- p6spy -->
     <logger name="p6spy" additivity="false">
         <appender-ref ref="FILE_P6SPY" />

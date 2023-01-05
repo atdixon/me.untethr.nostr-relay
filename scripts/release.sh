@@ -31,7 +31,7 @@ git tag "v${VERSION}"
 git push origin "v${VERSION}"
 
 # probably non-os portable sed command (works on mac):
-sed -i '' 's/"SNAPSHOT"/"'"${VERSION}"'"/g' src/me/untethr/nostr/version.clj
+sed -i '' 's/"SNAPSHOT"/"'"${VERSION}"'"/g' src/me/untethr/nostr/common/version.clj
 
 make clean uberjar
 

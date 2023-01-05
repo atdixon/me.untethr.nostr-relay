@@ -1,14 +1,19 @@
 (ns me.untethr.nostr.write-thread
-  (:import (com.google.common.util.concurrent FutureCallback Futures ListenableFuture ListeningExecutorService MoreExecutors)
+  (:require [clojure.tools.logging :as log])
+  (:import (com.google.common.util.concurrent FutureCallback Futures ListenableFuture ListeningExecutorService MoreExecutors ThreadFactoryBuilder)
            (java.util.concurrent ExecutorService Executors Future ThreadFactory)))
 
 (defn create-single-thread-executor
   ^ExecutorService []
   (Executors/newSingleThreadExecutor
-    (reify ThreadFactory
-      (newThread [_this r]
-        (doto (Thread. ^Runnable r)
-          (.setDaemon true))))))
+    (.build
+      (doto (ThreadFactoryBuilder.)
+        (.setDaemon true)
+        (.setNameFormat "write-thread-%d")
+        (.setUncaughtExceptionHandler
+          (reify Thread$UncaughtExceptionHandler
+            (^void uncaughtException [_this ^Thread _th ^Throwable t]
+              (log/error t "uncaught exeception in write thread"))))))))
 
 (defonce ^ListeningExecutorService single-event-thread
   (MoreExecutors/listeningDecorator (create-single-thread-executor)))

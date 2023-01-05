@@ -2,7 +2,7 @@
   (:require
     [clojure.tools.logging :as log]
     [me.untethr.nostr.common :as common]
-    [me.untethr.nostr.json-facade :as json-facade]
+    [me.untethr.nostr.common.json-facade :as json-facade]
     [clojure.string :as str]
     [clojure.set :as set])
   (:import

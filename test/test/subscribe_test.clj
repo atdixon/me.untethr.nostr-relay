@@ -159,6 +159,21 @@
     (is (= 0 (subscribe/num-filters-prefixes subs-atom)))
     (is (= @subs-atom (subscribe/create-empty-subs)))))
 
+(deftest unsubscribe-regression-test
+  []
+  ;; this was not a cause of regression but discovered in analyzing an issue
+  ;; that some users have spaces in their REQ ids, so keeping this test anyway
+  ;; to have coverage on that case.
+  (let [subs-atom (atom (subscribe/create-empty-subs))]
+    (subscribe/subscribe! subs-atom
+      "29566a63-cc6e-430b-837b-e772c18092d2"
+      "adhoc 9658"
+      [{:authors ["3e8ed898a0ae5402f6120ffa5a05e18b024b69209f17072fb89000c225b7109"]}]
+      #(throw (ex-info "unexpected" {:x %})))
+    (subscribe/unsubscribe! subs-atom
+      "29566a63-cc6e-430b-837b-e772c18092d2" "adhoc 9658")
+    (is (= @subs-atom (subscribe/create-empty-subs)))))
+
 ;; --
 
 (def char-hex

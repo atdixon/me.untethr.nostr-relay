@@ -1,9 +1,9 @@
 {:deps
  {org.clojure/clojure {:mvn/version "1.11.1"}
 
-  http-kit/http-kit {:mvn/version "2.6.0"}
-  metosin/reitit-core {:mvn/version "0.5.18"}
-  metosin/reitit-ring {:mvn/version "0.5.18"}
+  org.eclipse.jetty/jetty-server {:mvn/version "11.0.13"}
+  org.eclipse.jetty.websocket/websocket-jetty-api {:mvn/version "11.0.13"}
+  org.eclipse.jetty.websocket/websocket-jetty-server {:mvn/version "11.0.13"}
 
   org.xerial/sqlite-jdbc {:mvn/version "3.40.0.0"}
   com.github.seancorfield/next.jdbc {:mvn/version "1.3.847"}

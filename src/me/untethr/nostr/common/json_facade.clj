@@ -1,4 +1,4 @@
-(ns me.untethr.nostr.json-facade
+(ns me.untethr.nostr.common.json-facade
   (:require
     [jsonista.core :as json]
     [me.untethr.nostr.metrics :as metrics])

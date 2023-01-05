@@ -93,6 +93,10 @@ You can query for server metrics:
 
 ```shell
 $ curl https://<relay-host>/metrics
+
+# with jq installed
+$ curl -sS http://<relay-host>/metrics | jq '.meters | ."app.event.duplicate"
+$ watch "curl -sS http://<relay-host>/metrics | jq '.meters | .\"app.event.duplicate\"'"
 ```
 
 And issue basic non-websocket queries over your relay's data:

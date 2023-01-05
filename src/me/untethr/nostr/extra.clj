@@ -4,7 +4,7 @@
     [clojure.set :as set]
     [clojure.walk :as walk]
     [me.untethr.nostr.conf]
-    [me.untethr.nostr.json-facade :as json-facade]
+    [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.query :as query]
     [me.untethr.nostr.util :as util]
     [me.untethr.nostr.validation :as validation]
@@ -20,8 +20,11 @@
     :else (long x)))
 
 (defn- query-params->filter
+  "The provided `query-params` are expected to be a map of String to vec of
+   Strings."
   [query-params]
-  (let [prepared (some-> query-params
+  (let [prepared (into {} (map (fn [[k v]] [k (first v)])) query-params)
+        prepared (some-> prepared
                    walk/keywordize-keys
                    (select-keys [:since :until :limit :kind :id :author])
                    not-empty
@@ -43,9 +46,9 @@
   (when-let [req-err (validation/req-err "dummy-id" filters)]
     (throw (ex-info "bad request" {:err req-err :filters filters}))))
 
-(defn handler-q
-  "A ring hander that supports ad hoc queries over relay data. Primarily for
-   admin purposes, i.e., should not be used by any clients.
+(defn execute-q
+  "Supports ad hoc queries over relay data. Primarily for admin purposes, i.e.,
+   should not be used by any real relay clients.
 
    This handler supports querying using both URL parameters (especially
    useful from a browser) and the full query filter forms in the HTTP request
@@ -60,17 +63,16 @@
 
    When using filters in body request, you'll need to specify
    `Content-Type` to something other than \"x-www-form-urlencoded\"
-   (otherwise ring middleware may consume the request :body before our handler
-    here can):
+   (otherwise jetty/middleware will try to interpret the body as form params):
 
      curl -H 'Content-Type: application/json' \\
        -XGET <your-relay-host>/q \\
        --data '[{\"authors\":[\"<pubkey>\"]}]'
    "
-  [^Conf conf db prepare-req-filters-fn req]
+  [^Conf conf db prepare-req-filters-fn req-query-params req-body]
   (let [overall-start-nanos (System/nanoTime)
-        query-params-as-filter (some-> req :query-params query-params->filter)
-        body-as-filters (some->> req :body slurp not-empty json-facade/parse)
+        query-params-as-filter (some-> req-query-params query-params->filter)
+        body-as-filters (some->> req-body not-empty json-facade/parse)
         use-filters (or (some-> query-params-as-filter vector) body-as-filters [{}])
         _ (validate-filters! use-filters)
         prepared-filters (prepare-req-filters-fn conf use-filters)
@@ -102,10 +104,8 @@
                           (pprint/print-table
                             [:rowid :kind :pubkey :content] rows')))
           overall-duration-millis (util/nanos-to-millis (- (System/nanoTime) overall-start-nanos))]
-      {:status 200
-       :headers {"Content-Type" "text/plain"}
-       :body (format "filters: %s elapsed: %d/%dms (query/overall)%n%s"
-               json-of-used-filters
-               query-duration-millis
-               overall-duration-millis
-               results-str)})))
+      (format "filters: %s elapsed: %d/%dms (query/overall)%n%s"
+        json-of-used-filters
+        query-duration-millis
+        overall-duration-millis
+        results-str))))

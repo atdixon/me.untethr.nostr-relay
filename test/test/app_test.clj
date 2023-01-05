@@ -19,7 +19,7 @@
   ([supported-kinds-vec max-content-length max-created-at-delta]
    (conf/->Conf nil 1234 "nx.db"
      (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
-     max-content-length max-created-at-delta)))
+     max-content-length max-created-at-delta nil nil nil)))
 
 (deftest fulfill-synchronously?-test
   (is (not (#'app/fulfill-synchronously? [])))
@@ -87,6 +87,7 @@
                          ::stub-db
                          ::stub-subs-atom
                          ::stub-channel-id
+                         ::stub-websocket-state
                          ::stub-channel
                          ["EVENT" %2]
                          ::stub-raw-message)
@@ -141,6 +142,7 @@
                              db
                              ::stub-subs-atom
                              ::stub-channel-id
+                             ::stub-websocket-state
                              ::stub-channel
                              %1
                              ::stub-raw-message)

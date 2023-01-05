@@ -3,7 +3,7 @@
             [next.jdbc :as jdbc]
             [me.untethr.nostr.store :as store]
             [me.untethr.nostr.app :as app]
-            [me.untethr.nostr.json-facade :as json-facade]
+            [me.untethr.nostr.common.json-facade :as json-facade]
             [clojure.java.io :as io]))
 
 (def ^:private hex-chars "abcdef0123456789")

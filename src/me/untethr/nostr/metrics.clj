@@ -49,11 +49,14 @@
 
 (defn create-metrics
   ([] ;; arity for testing
-   (create-metrics (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1)))
-  ([quick-row-count-fn num-subscriptions-fn num-filter-prefixes-fn num-firehose-filters-fn num-fulfillments-fn]
+   (create-metrics
+     (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1)))
+  ([quick-row-count-fn websocket-registry-size-fn num-subscriptions-fn num-filter-prefixes-fn
+    num-firehose-filters-fn num-fulfillments-fn]
    (let [codahale (new-registry)]
      (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
      (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
+     (gauge-fn codahale ["app" "websocket-registry" "size-est"] websocket-registry-size-fn)
      (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
      (gauge-fn codahale ["app" "subscribe" "active-filter-prefixes"] num-filter-prefixes-fn)
      (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)

@@ -8,10 +8,21 @@
             [me.untethr.nostr.metrics :as metrics]
             [me.untethr.nostr.query :as query]
             [me.untethr.nostr.util :as util])
-  (:import (java.util.concurrent CompletableFuture Executors ThreadFactory ExecutorService Future)))
+  (:import (com.google.common.util.concurrent ThreadFactoryBuilder)
+           (java.lang Thread$UncaughtExceptionHandler)
+           (java.util.concurrent CompletableFuture Executors ExecutorService Future)
+           (java.util.function Function)))
 
-(def ^:private batch-size 30)
+(def ^:private batch-size 500)
 (def ^:private num-fulfillment-threads 1)
+;; ultimately would like to serve all fulfillments -- larger fulfillments from
+;; via different process, perhaps. at least we'd like to move later-stages of
+;; larger fulfillments to a lower priority lane (e.g., when serving records
+;; from prior to today or last N days etc)
+;; NOTE: if we update this threshold, we'll want to consider effect in combo with
+;; setMaxOutgoingFrames; ie, we'll want to throttle fulfillment based on
+;; outstanding sends that haven't received WriteCallback yet etc.
+(def ^:private max-fulfillment-rows 5000)
 
 (defrecord FulfillHandle
   [^Future fut cancelled?-vol])
@@ -23,10 +34,14 @@
 (defn create-pool
   ^ExecutorService []
   (Executors/newFixedThreadPool num-fulfillment-threads
-    (reify ThreadFactory
-      (newThread [_this r]
-        (doto (Thread. ^Runnable r)
-          (.setDaemon true))))))
+    (.build
+      (doto (ThreadFactoryBuilder.)
+        (.setDaemon true)
+        (.setNameFormat "fulfillment-%d")
+        (.setUncaughtExceptionHandler
+          (reify Thread$UncaughtExceptionHandler
+            (^void uncaughtException [_this ^Thread _th ^Throwable t]
+              (log/error t "uncaught exeception in fulfillment thread"))))))))
 
 (defonce ^ExecutorService global-pool (create-pool))
 
@@ -50,7 +65,7 @@
             (when @cancelled?-vol
               (metrics/mark-fulfillment-interrupt! metrics)
               (reduced :cancelled)))
-          (jdbc/plan db (query/filters->query filters :target-row-id target-row-id))))
+          (jdbc/plan db (query/filters->query filters :target-row-id target-row-id :overall-limit 1000))))
       (when-not @cancelled?-vol
         (completion-callback)
         (metrics/fulfillment-num-rows! metrics @tally)))
@@ -98,69 +113,91 @@
     (add-to-registry! fulfill-atom channel-id sid f cancelled?-vol)
     f))
 
+(defn- internal-fulfill-one-batch!
+  [metrics db filters target-row-id observer cancelled?-vol ^CompletableFuture overall-result-future]
+  ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
+  ;; consider alternative: look into if we could somehow truly batch websocket events
+  ;; back to clients?
+  (let [query-plan (jdbc/plan db
+                     (query/filters->query filters
+                       :target-row-id target-row-id
+                       :overall-limit batch-size))]
+    (metrics/time-fulfillment! metrics
+      (transduce
+        ;; note: if observer throws exception we catch below and for
+        ;; now call it unexpected
+        (map #(when-not @cancelled?-vol
+                (observer (:raw_event %))
+                (:rowid %)))
+        (completing
+          (fn
+            [[running-count min-rowid] row-rowid]
+            (if @cancelled?-vol
+              (do
+                (metrics/mark-fulfillment-interrupt! metrics)
+                (reduced :cancelled))
+              [(inc running-count)
+               (if min-rowid
+                 (min min-rowid row-rowid)
+                 row-rowid)])))
+        [0 nil] ;; [<count> <min-rowid>]
+        query-plan))))
+
 (defn submit-use-batching!
   ^Future [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [start-nanos (System/nanoTime)
         sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
+        latest-task-future-vol (volatile! nil)
         ^CompletableFuture result-future (CompletableFuture.)
+        _ (add-to-registry! fulfill-atom channel-id sid result-future cancelled?-vol)
         ^Runnable batch-fn
-        (fn batch-fn [use-target-row-id]
-          (let [query-plan (jdbc/plan db
-                             (query/filters->query filters
-                               :target-row-id use-target-row-id
-                               :overall-limit batch-size))
-                ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
-                ;; consider alternative: look into if we could somehow truly batch websocket events
-                ;; back to clients?
-                [result-count min-rowid] (try
-                                           (metrics/time-fulfillment! metrics
-                                             (transduce
-                                               ;; note: if observer throws exception we catch below and for
-                                               ;; now call it unexpected
-                                               (map #(when-not @cancelled?-vol
-                                                       (observer (:raw_event %))
-                                                       (:rowid %)))
-                                               (completing
-                                                 (fn
-                                                   [[running-count min-rowid] row-rowid]
-                                                   (if @cancelled?-vol
-                                                     (do
-                                                       (metrics/mark-fulfillment-interrupt! metrics)
-                                                       (reduced :cancelled))
-                                                     [(inc running-count)
-                                                      (if min-rowid
-                                                        (min min-rowid row-rowid)
-                                                        row-rowid)])))
-                                               [0 nil] ;; [<count> <min-rowid>]
-                                               query-plan))
-                                           (catch Exception e
-                                             (log/error e "unexpected from batched transduce")
-                                             (metrics/mark-fulfillment-error! metrics)
-                                             (.completeExceptionally result-future e)))]
-            (if (< result-count batch-size)
-              (try
-                (eose-callback)
-                (.complete result-future :success)
-                (metrics/update-overall-fullfillment-millis! metrics
-                  (util/nanos-to-millis (- (System/nanoTime) start-nanos)))
-                (catch Exception e
-                  (log/error e "failed on eose-callback")
-                  (metrics/mark-fulfillment-error! metrics)
-                  (.completeExceptionally result-future e)))
-              (try
-                (.submit global-pool ^Runnable (partial batch-fn (dec min-rowid)))
-                (catch Exception e
-                  (log/error e "failed to re-submit")
-                  (metrics/mark-fulfillment-error! metrics)
-                  (.completeExceptionally result-future e))))))
-        f (try
-            (.submit global-pool ^Runnable (partial batch-fn target-row-id))
-            (catch Exception e
-              (log/error e "failed to submit")
+        (fn batch-fn [use-target-row-id iteration-num]
+          (try
+            (let [fulfill-result (internal-fulfill-one-batch! metrics
+                                   db filters use-target-row-id observer
+                                   cancelled?-vol result-future)]
+              (when-not (identical? fulfill-result :cancelled)
+                (let [[result-count min-rowid] fulfill-result]
+                  (cond
+                    (< result-count batch-size)
+                    (do
+                      (eose-callback)
+                      (.complete result-future :success)
+                      (metrics/fulfillment-num-rows! metrics
+                        (+ (* iteration-num batch-size) result-count))
+                      (metrics/update-overall-fullfillment-millis! metrics
+                        (util/nanos-to-millis (- (System/nanoTime) start-nanos))))
+                    (>= (* (inc iteration-num) batch-size) max-fulfillment-rows)
+                    (do
+                      (log/info "fulfilled maximum rows willing" {:iteration-num iteration-num})
+                      (eose-callback)
+                      (.complete result-future :success)
+                      (metrics/fulfillment-num-rows! metrics (* (inc iteration-num) batch-size))
+                      (metrics/update-overall-fullfillment-millis! metrics
+                        (util/nanos-to-millis (- (System/nanoTime) start-nanos))))
+                    :else
+                    (do
+                      (->> (.submit global-pool ^Runnable (partial batch-fn (dec min-rowid) (inc iteration-num)))
+                        (vreset! latest-task-future-vol)))))))
+            (catch Throwable t
+              (log/error t "during fulfill batch")
               (metrics/mark-fulfillment-error! metrics)
-              (.completeExceptionally result-future e)))]
-    (add-to-registry! fulfill-atom channel-id sid result-future cancelled?-vol)
+              (.completeExceptionally result-future t))))
+        _first-batch-future (try
+                              (->> (.submit global-pool ^Runnable (partial batch-fn target-row-id 0))
+                                (vreset! latest-task-future-vol))
+                              (catch Exception e
+                                (log/error e "failed to submit")
+                                (metrics/mark-fulfillment-error! metrics)
+                                (.completeExceptionally result-future e)))]
+    ;; when our result-future gets cancelled, we'd like to cancel any outstanding
+    ;; next batch task so that it gets freed asap from mem along with any observer
+    ;; callbacks and associated channel state etc.
+    (.exceptionally result-future
+      (reify Function
+        (apply [_this t]
+          (some-> latest-task-future-vol ^Future deref (.cancel false)))))
     result-future))
 
 (defn- cancel!* [registry channel-id sid]

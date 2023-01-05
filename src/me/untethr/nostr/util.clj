@@ -1,4 +1,6 @@
-(ns me.untethr.nostr.util)
+(ns me.untethr.nostr.util
+  (:import (com.google.common.base Supplier Suppliers)
+           (java.util.concurrent TimeUnit)))
 
 (defn current-system-epoch-seconds
   []
@@ -16,3 +18,14 @@
 (defn nanos-to-millis
   [nanos]
   (long (/ nanos 1000000)))
+
+(defn memoize-with-expiration
+  [f duration-millis]
+  (let [memoized-supplier
+        (Suppliers/memoizeWithExpiration
+          (reify Supplier
+            (get [_this] (f)))
+          duration-millis
+          TimeUnit/MILLISECONDS)]
+    (fn []
+      (.get memoized-supplier))))

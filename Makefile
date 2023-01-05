@@ -13,7 +13,10 @@ dependency-sources:
 
 .PHONY: run
 run:
-	clj -J-Dlogback.configurationFile=conf/logback.xml -M -m me.untethr.nostr.app
+	clj \
+		-J-Dlogback.configurationFile=conf/logback.xml \
+		-J-Xms1g -J-Xmx1g \
+ 		-M -m me.untethr.nostr.app
 
 .PHONY: uberjar
 uberjar:
