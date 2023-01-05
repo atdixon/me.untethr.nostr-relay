@@ -117,9 +117,13 @@
           ;; for non-websocket requests, we expect an earlier handler to handle "/"
           ;; so this is unexpected...
           (log/warn "unexpected request"
-            {:request-url (.getRequestURL req)
+            {:request-url (str (.getRequestURL req))
              :selected-headers {:connection
-                                (.getHeader req "Connection")}})
+                                (.getHeader req "Connection")
+                                :upgrade
+                                (.getHeader req "Upgrade")
+                                :header-names
+                                (vec (enumeration-seq (.getHeaderNames req)))}})
           (update-response! resp {:status 404}))))))
 
 (defn- disable-default-servlet!

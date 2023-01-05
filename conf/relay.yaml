@@ -20,7 +20,8 @@ max-content-length: 1048576
 # epoch millis *plus* this delta will be accepted.
 max-created-at-delta: 2700
 
+# Optional websockets config.
 websockets:
   max-outgoing-frames: 5000
   disable-permessage-deflate: false
-  enable-batch-mode: true
+  enable-batch-mode: false

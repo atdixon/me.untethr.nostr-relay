@@ -54,7 +54,7 @@
   (let [m (.getMetrics x)
         used-bytes (value-of (.get m "total.used"))
         max-bytes (value-of (.get m "total.max"))
-        percentage (* 100 (long (/ used-bytes max-bytes)))]
+        percentage (long (* 100 (/ used-bytes max-bytes)))]
     [:span
      [:b (long (/ used-bytes 1000000))] "M / "
      [:b (long (/ max-bytes 1000000))] "M (" percentage "%)"]))
