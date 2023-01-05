@@ -1,7 +1,7 @@
 (ns me.untethr.nostr.common.json-facade
   (:require
     [jsonista.core :as json]
-    [me.untethr.nostr.metrics :as metrics])
+    [me.untethr.nostr.common.metrics :as metrics])
   (:import (com.fasterxml.jackson.databind SerializationFeature)))
 
 (def json-mapper

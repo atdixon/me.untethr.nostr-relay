@@ -1,4 +1,4 @@
-(ns me.untethr.nostr.metrics
+(ns me.untethr.nostr.common.metrics
   (:require
     [metrics.core :as metrics-core :refer [new-registry]]
     [metrics.counters :refer [counter inc! dec!]]
@@ -6,13 +6,20 @@
     [metrics.histograms :refer [histogram update!]]
     [metrics.meters :refer [meter mark!]]
     [metrics.timers :refer [timer time!]])
-  (:import (com.codahale.metrics MetricRegistry Meter Histogram Timer Counter)
+  (:import (com.codahale.metrics Gauge MetricRegistry Meter Histogram Timer Counter)
            (com.codahale.metrics.json MetricsModule)
            (java.util.concurrent TimeUnit)
            (com.codahale.metrics.jvm MemoryUsageGaugeSet)))
 
 (defrecord Metrics
   [^MetricRegistry codahale-registry
+   ^MemoryUsageGaugeSet jvm-memory-usage
+   ^Gauge quick-row-count
+   ^Gauge websocket-registry-size
+   ^Gauge active-subscriptions
+   ^Gauge active-filter-prefixes
+   ^Gauge active-firehose-filters
+   ^Gauge active-fullfillments
    ^Counter websocket-counter
    ^Meter websocket-created
    ^Histogram websocket-lifetime-secs
@@ -32,8 +39,8 @@
    ^Timer fulfillment-timer
    ^Timer fulfillment-overall-timer
    ^Histogram fulfillment-num-rows
-   ^Counter fulfillment-interrupt
-   ^Counter fulfillment-error
+   ^Meter fulfillment-interrupt
+   ^Meter fulfillment-error
    ^Counter fulfillment-active-threads-counter
    ])
 
@@ -42,7 +49,7 @@
   (MetricsModule. (TimeUnit/SECONDS) (TimeUnit/MILLISECONDS) false))
 
 (defn memory-usage-gauge-set
-  []
+  ^MemoryUsageGaugeSet []
   (proxy [MemoryUsageGaugeSet] []
     (getMetrics []
       (select-keys (proxy-super getMetrics) ["total.used" "total.max"]))))
@@ -54,15 +61,15 @@
   ([quick-row-count-fn websocket-registry-size-fn num-subscriptions-fn num-filter-prefixes-fn
     num-firehose-filters-fn num-fulfillments-fn]
    (let [codahale (new-registry)]
-     (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
-     (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
-     (gauge-fn codahale ["app" "websocket-registry" "size-est"] websocket-registry-size-fn)
-     (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
-     (gauge-fn codahale ["app" "subscribe" "active-filter-prefixes"] num-filter-prefixes-fn)
-     (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)
-     (gauge-fn codahale ["app" "subscribe" "fulfillment-active"] num-fulfillments-fn)
      (->Metrics
        codahale
+       (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
+       (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
+       (gauge-fn codahale ["app" "websocket-registry" "size-est"] websocket-registry-size-fn)
+       (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
+       (gauge-fn codahale ["app" "subscribe" "active-filter-prefixes"] num-filter-prefixes-fn)
+       (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)
+       (gauge-fn codahale ["app" "subscribe" "fulfillment-active"] num-fulfillments-fn)
        (counter codahale ["app" "websocket" "active"])
        (meter codahale ["app" "websocket" "created"])
        (histogram codahale ["app" "websocket" "lifetime-secs"])

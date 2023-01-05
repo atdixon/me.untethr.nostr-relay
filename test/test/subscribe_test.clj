@@ -8,7 +8,7 @@
     [clojure.tools.logging :as log]
     [me.untethr.nostr.app :as app]
     [me.untethr.nostr.subscribe :as subscribe]
-    [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.common.metrics :as metrics]
     [test.support :as support]
     [test.test-data :as test-data :refer [hx]])
   (:import (java.util List)))

@@ -4,7 +4,7 @@
             [me.untethr.nostr.app :as app]
             [test.support :as support]
             [test.test-data :as test-data]
-            [me.untethr.nostr.metrics :as metrics])
+            [me.untethr.nostr.common.metrics :as metrics])
   (:import (java.util.concurrent Future TimeUnit Semaphore)))
 
 (deftest fulfill-test

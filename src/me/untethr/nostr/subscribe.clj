@@ -3,7 +3,7 @@
    is expected to not concurrently perform these ops for the same channel-id / conn."
   (:require
     [clojure.string :as str]
-    [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.util :as util]
     [me.untethr.nostr.validation :as validation]
     [clojure.tools.logging :as log]

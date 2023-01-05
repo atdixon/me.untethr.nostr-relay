@@ -3,7 +3,7 @@
     [clojure.test :refer :all]
     [me.untethr.nostr.app :as app]
     [me.untethr.nostr.conf :as conf]
-    [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.query :as query]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.write-thread :as write-thread]

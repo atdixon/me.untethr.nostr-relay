@@ -16,6 +16,8 @@
   metosin/jsonista {:mvn/version "0.3.7"}
   clj-commons/clj-yaml {:mvn/version "1.0.26"}
 
+  hiccup/hiccup {:mvn/version "1.0.5"}
+
   com.google.guava/guava {:mvn/version "31.1-jre"}
 
   com.bucket4j/bucket4j-core {:mvn/version "8.1.1"}

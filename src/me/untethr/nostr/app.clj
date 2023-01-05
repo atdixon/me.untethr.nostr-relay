@@ -8,10 +8,11 @@
     [me.untethr.nostr.extra :as extra]
     [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.page.home :as page-home]
+    [me.untethr.nostr.page.metrics-porcelain :as metrics-porcelain]
     [me.untethr.nostr.page.nip11 :as page-nip11]
     [me.untethr.nostr.jetty :as jetty]
     [me.untethr.nostr.common.json-facade :as json-facade]
-    [me.untethr.nostr.metrics :as metrics]
+    [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.store :as store]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.util :as util]
@@ -589,6 +590,14 @@
                       ;; because we assume we have a jackson-metrics-module
                       ;; registered with the jackson object mapper.
                       :body (write-str* (:codahale-registry metrics))}))
+        (jetty/create-simple-handler
+          (jetty/uri-req-pred "/metrics-porcelain")
+          (fn [_req] {:status 200
+                      :content-type "text/html"
+                      ;; we can json-serialize the whole metrics registry here
+                      ;; because we assume we have a jackson-metrics-module
+                      ;; registered with the jackson object mapper.
+                      :body (metrics-porcelain/html metrics)}))
         ;; todo - move these to /metrics and introduce /metrics-simple
         ;; -- /stats-jetty/not-ws --
         (jetty/create-simple-handler

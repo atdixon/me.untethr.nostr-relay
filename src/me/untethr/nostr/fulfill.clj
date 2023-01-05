@@ -5,7 +5,7 @@
    channel-id."
   (:require [clojure.tools.logging :as log]
             [next.jdbc :as jdbc]
-            [me.untethr.nostr.metrics :as metrics]
+            [me.untethr.nostr.common.metrics :as metrics]
             [me.untethr.nostr.query :as query]
             [me.untethr.nostr.util :as util])
   (:import (com.google.common.util.concurrent ThreadFactoryBuilder)
