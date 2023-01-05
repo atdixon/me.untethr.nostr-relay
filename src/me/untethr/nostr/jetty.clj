@@ -97,8 +97,8 @@
 (defn websocket-request?
   [^HttpServletRequest req]
   (and
-    (.equalsIgnoreCase (.getHeader req "Connection") "upgrade")
-    (.equalsIgnoreCase (.getHeader req "Upgrade") "websocket")))
+    (some-> req (.getHeader "Connection") (.equalsIgnoreCase "upgrade"))
+    (some-> req (.getHeader "Upgrade") (.equalsIgnoreCase "websocket"))))
 
 (defn create-websocket-upgrade-servlet [^JettyWebSocketCreator websocket-creator]
   ;; @see https://www.eclipse.org/jetty/documentation/jetty-11/programming-guide/index.html#pg-server-websocket-jetty-endpoints
