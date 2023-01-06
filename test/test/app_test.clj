@@ -148,9 +148,9 @@
                              ::stub-raw-message)
                            @result-atom)]
         (with-redefs [;; for our test we need run-async to actually be a blocking sync:
-                      write-thread/run-async! (fn [task-fn success-fn failure-fn]
+                      write-thread/run-async! (fn [db-conn task-fn success-fn failure-fn]
                                                 (let [res (try
-                                                            (task-fn)
+                                                            (task-fn db-conn)
                                                             (catch Throwable t
                                                               t))]
                                                   (if (instance? Throwable res)

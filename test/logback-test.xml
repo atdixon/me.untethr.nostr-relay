@@ -18,5 +18,5 @@
     </logger>
     -->
 
-    <logger name="p6spy" level="warn"/>
+    <logger name="p6spy" level="info"/>
 </configuration>

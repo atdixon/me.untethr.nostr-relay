@@ -5,6 +5,7 @@
     [clojure.walk :as walk]
     [me.untethr.nostr.conf]
     [me.untethr.nostr.common.json-facade :as json-facade]
+    [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.query :as query]
     [me.untethr.nostr.util :as util]
     [me.untethr.nostr.validation :as validation]
@@ -69,7 +70,7 @@
        -XGET <your-relay-host>/q \\
        --data '[{\"authors\":[\"<pubkey>\"]}]'
    "
-  [^Conf conf db prepare-req-filters-fn req-query-params req-body]
+  [^Conf conf readonly-db prepare-req-filters-fn req-query-params req-body]
   (let [overall-start-nanos (System/nanoTime)
         query-params-as-filter (some-> req-query-params query-params->filter)
         body-as-filters (some->> req-body not-empty json-facade/parse)
@@ -78,7 +79,7 @@
         prepared-filters (prepare-req-filters-fn conf use-filters)
         as-query (query/filters->query prepared-filters :overall-limit 100)]
     (let [query-start-nanos (System/nanoTime)
-          rows (jdbc/execute! db as-query
+          rows (jdbc/execute! readonly-db as-query
                  {:builder-fn rs/as-unqualified-lower-maps})
           query-duration-millis (util/nanos-to-millis (- (System/nanoTime) query-start-nanos))
           rows' (mapv

@@ -159,13 +159,13 @@
     'handle-stored-or-replaced-event!))
 
 (defn- store-event!
-  ([db event-obj raw-event]
-   (store-event! db nil event-obj raw-event))
-  ([db channel-id {:keys [id pubkey created_at kind tags] :as _e} raw-event]
+  ([singleton-writeable-connection event-obj raw-event]
+   (store-event! singleton-writeable-connection nil event-obj raw-event))
+  ([singleton-writeable-connection channel-id {:keys [id pubkey created_at kind tags] :as _e} raw-event]
    ;; use a tx, for now; don't want to answer queries with events
    ;; that don't fully exist. could denormalize or some other strat
    ;; to avoid tx if needed
-   (jdbc/with-transaction [tx db]
+   (jdbc/with-transaction [tx singleton-writeable-connection]
      (if-let [rowid (store/insert-event! tx id pubkey created_at kind raw-event channel-id)]
        (do
          (doseq [[tag-kind arg0] tags]
@@ -250,7 +250,7 @@
   (some-> event-obj :kind (#(<= 20000 % (dec 30000)))))
 
 (defn- receive-accepted-event!
-  [^Conf conf metrics db subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
+  [^Conf conf metrics singleton-writeable-connection subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
   (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event event-obj))]
     (if (identical? verified-event-or-err-map event-obj)
       ;; For now, we re-render the raw event into json; we could be faster by
@@ -276,9 +276,10 @@
           ;; this means we'll send a "duplicate:" nip-20 response whenever someone sends a
           ;; replaceable event that has already been replaced, and we'll bear that cross)
           (write-thread/run-async!
-            (fn []
+            singleton-writeable-connection
+            (fn [singleton-writeable-connection]
               (metrics/time-store-event! metrics
-                (store-event! db channel-id verified-event-or-err-map raw-event)))
+                (store-event! singleton-writeable-connection channel-id verified-event-or-err-map raw-event)))
             (fn [store-result]
               (if (identical? store-result :duplicate)
                 (handle-duplicate-event! metrics websocket-state ch-sess event-obj "duplicate")
@@ -296,7 +297,7 @@
       (handle-invalid-event! metrics websocket-state ch-sess event-obj verified-event-or-err-map))))
 
 (defn- receive-event
-  [^Conf conf metrics db subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
+  [^Conf conf metrics singleton-writeable-connection subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
   ;; Before we attempt to validate an event and its signature (which costs us
   ;; some compute), we'll determine if we're destined to reject the event anyway.
   ;; These are generally rules from configuration - for example, if the event
@@ -304,7 +305,7 @@
   ;; reject it without trying to validate it.
   (if-let [rejection-reason (reject-event-before-verify? conf e)]
     (handle-rejected-event! metrics websocket-state ch-sess e rejection-reason)
-    (receive-accepted-event! ^Conf conf metrics db subs-atom channel-id websocket-state ch-sess e raw-message)))
+    (receive-accepted-event! ^Conf conf metrics singleton-writeable-connection subs-atom channel-id websocket-state ch-sess e raw-message)))
 
 (def max-filters 20)
 
@@ -351,7 +352,7 @@
   "This function defines how we handle any requests that come on an open websocket
    channel. We expect these to be valid nip-01 defined requests, but we don't
    assume all requests are valid and handle invalid requests in relevant ways."
-  [^Conf conf metrics db subs-atom fulfill-atom channel-id websocket-state ch-sess [_ req-id & req-filters]]
+  [^Conf conf metrics singleton-writeable-connection readonly-db subs-atom fulfill-atom channel-id websocket-state ch-sess [_ req-id & req-filters]]
   (if-not (every? map? req-filters)
     ;; Some filter in the request was not an object, so nothing we can do but
     ;; send back a NOTICE:
@@ -421,7 +422,7 @@
                 ;; some few number of messages in which case we may double-deliver
                 ;; an event or few from both fulfillment and realtime notifications,
                 ;; but, crucially, we will never miss an event:
-                (if-let [target-row-id (store/max-event-rowid db)]
+                (if-let [target-row-id (store/max-event-rowid readonly-db)]
                   (letfn [;; this fullfillment observer function is a callback
                           ;; that will get invoked for every event in the db that
                           ;; matches the subscription.
@@ -445,16 +446,16 @@
                       ;; any other REQ or other event from the client -- and we're not going
                       ;; into fulfillment queues.
                       (fulfill/synchronous!!
-                        metrics db channel-id internal-req-id use-req-filters target-row-id
+                        metrics readonly-db channel-id internal-req-id use-req-filters target-row-id
                         fulfillment-observer fulfillment-eose-callback)
                       (fulfill/submit-use-batching!
-                        metrics db fulfill-atom channel-id internal-req-id use-req-filters target-row-id
+                        metrics readonly-db fulfill-atom channel-id internal-req-id use-req-filters target-row-id
                         fulfillment-observer fulfillment-eose-callback)))
                   ;; should only occur on epochal first event
                   (log/warn "no max rowid; nothing yet to fulfill"))))))))))
 
 (defn- receive-close
-  [metrics _db subs-atom fulfill-atom channel-id _websocket-state _ch-sess [_ req-id]]
+  [metrics subs-atom fulfill-atom channel-id _websocket-state _ch-sess [_ req-id]]
   (let [internal-req-id (->internal-req-id req-id)]
     (if-let [err (validation/close-err internal-req-id)]
       (log/warn "invalid close" {:err err :req-id internal-req-id})
@@ -480,7 +481,7 @@
     'notice-problem-message))
 
 (defn- ws-receive
-  [^Conf conf metrics db subs-atom fulfill-atom {:keys [uuid] :as websocket-state} ch-sess raw-message]
+  [^Conf conf metrics singleton-writeable-connection readonly-db subs-atom fulfill-atom {:keys [uuid] :as websocket-state} ch-sess raw-message]
   ;; note: have verified that exceptions from here are caught, logged, and swallowed
   ;; by http-kit.
   ;; First thing we do is parse any message on the wire - we expect every message
@@ -493,9 +494,9 @@
       (if (and (vector? parsed-message-or-exc) (not-empty parsed-message-or-exc))
         (condp = (nth parsed-message-or-exc 0)
           ;; These are the three types of message that nostr defines:
-          "EVENT" (receive-event conf metrics db subs-atom uuid websocket-state ch-sess parsed-message-or-exc raw-message)
-          "REQ" (receive-req conf metrics db subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
-          "CLOSE" (receive-close metrics db subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
+          "EVENT" (receive-event conf metrics singleton-writeable-connection subs-atom uuid websocket-state ch-sess parsed-message-or-exc raw-message)
+          "REQ" (receive-req conf metrics singleton-writeable-connection readonly-db subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
+          "CLOSE" (receive-close metrics subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
           ;; If we do not recongize the message type, then we also do not process
           ;; and send a NOTICE response.
           (handle-problem-message! metrics websocket-state ch-sess raw-message (str "Unknown message type: " (nth parsed-message-or-exc 0))))
@@ -504,16 +505,20 @@
         (handle-problem-message! metrics websocket-state ch-sess raw-message (str "Expected a JSON array: " raw-message))))))
 
 (defn- ws-open
-  [metrics db websocket-connections-registry _subs-atom _fulfill-atom {:keys [uuid ip-address] :as websocket-state}]
+  [metrics singleton-writeable-connection websocket-connections-registry _subs-atom _fulfill-atom
+   {:keys [uuid ip-address] :as websocket-state}]
   (ws-registry/add! websocket-connections-registry websocket-state)
   ;; We keep track of created channels and the ip address that created the channel
   ;; in our database. This allows us to do some forensics if we see any bad behavior
   ;; and need to blacklist any ips, for example. Note that all of our db writes
   ;; are done on a singleton write thread - this is optimal write behavior for
   ;; sqlite3 using WAL-mode:
-  (write-thread/run-async!
-    (fn [] (metrics/time-insert-channel! metrics
-             (store/insert-channel! db uuid ip-address)))
+  ;; todo re-enable?
+  #_(write-thread/run-async!
+    singleton-writeable-connection
+    (fn [singleton-writeable-connection]
+      (metrics/time-insert-channel! metrics
+        (store/insert-channel! singleton-writeable-connection uuid ip-address)))
     (fn [_] (log/debug "inserted channel" (:uuid websocket-state)))
     (fn [^Throwable t] (log/error t "while inserting new channel" (:uuid websocket-state))))
   ;; Without waiting fo the db write to occur, we can update our metrics and
@@ -521,7 +526,7 @@
   (metrics/websocket-open! metrics))
 
 (defn- ws-close
-  [metrics _db websocket-connections-registry subs-atom fulfill-atom
+  [metrics websocket-connections-registry subs-atom fulfill-atom
    {:keys [uuid start-ns] :as websocket-state} _ch-sess _status]
   (ws-registry/remove! websocket-connections-registry websocket-state)
   ;; Update our metrics to close the websocket, recording also the duration of the
@@ -544,7 +549,7 @@
                       nip05-json
                       nip11-json
                       metrics
-                      db]
+                      readonly-datasource]
   (doto non-ws-handler
     (.setHandler
       (jetty/create-handler-list
@@ -578,7 +583,7 @@
           (fn [^HttpServletRequest req]
             {:status 200
              :content-type "text/plain"
-             :body (extra/execute-q conf db prepare-req-filters
+             :body (extra/execute-q conf readonly-datasource prepare-req-filters
                      (jetty/->query-params req)
                      (jetty/->body-str req))}))
         ;; -- /metrics --
@@ -613,8 +618,8 @@
                       :body (.toStatsHTML ws-handler)}))))))
 
 (defn- create-jetty-websocket-creator
-  ^JettyWebSocketCreator [^Conf conf metrics db websocket-connections-registry
-                          subs-atom fulfill-atom]
+  ^JettyWebSocketCreator [^Conf conf metrics singleton-writeable-connection readonly-db
+                          websocket-connections-registry subs-atom fulfill-atom]
   (jetty/create-jetty-websocket-creator
     {:on-create
      (fn [^JettyServerUpgradeRequest req ^JettyServerUpgradeResponse resp]
@@ -631,7 +636,7 @@
              (filter #(not= "permessage-deflate"
                         (.getName ^ExtensionConfig %)) (.getExtensions req))))
          (log/debug 'ws-open (:uuid created-state) (:ip-address created-state))
-         (ws-open metrics db websocket-connections-registry subs-atom fulfill-atom created-state)
+         (ws-open metrics singleton-writeable-connection websocket-connections-registry subs-atom fulfill-atom created-state)
          created-state))
      :on-connect
      (fn [created-state sess]
@@ -675,10 +680,11 @@
      ;; see https://github.com/eclipse/jetty.project/issues/2699
      (fn [created-state sess status-code reason]
        (log/debug 'ws-close status-code reason (:uuid created-state))
-       (ws-close metrics db websocket-connections-registry subs-atom fulfill-atom created-state sess status-code))
+       (ws-close metrics websocket-connections-registry subs-atom fulfill-atom created-state sess status-code))
      :on-text-message
      (fn [created-state sess message]
-       (ws-receive conf metrics db subs-atom fulfill-atom created-state sess message))}))
+       (ws-receive conf metrics singleton-writeable-connection readonly-db subs-atom fulfill-atom
+         created-state sess message))}))
 
 ;; --
 
@@ -711,15 +717,15 @@
         ;; the db for max-rowid. But we also want our datasource to be able
         ;; to report metrics.) So we use a holder volatile so the metrics
         ;; registry can use it after it's been instantiated.
-        db-holder (volatile! nil)
+        readonly-db-holder (volatile! nil)
         non-ws-handler-container (StatisticsHandler.)
         ws-handler-container (StatisticsHandler.)
         ;; We report various server metrics and expose them via http for
         ;; observability (we use https://metrics.dropwizard.io/ for this):
         metrics (metrics/create-metrics
                   (util/memoize-with-expiration
-                    #(if @db-holder
-                       (store/max-event-rowid @db-holder) -1)
+                    #(if @readonly-db-holder
+                       (store/max-event-rowid @readonly-db-holder) -1)
                     ;; just in case some queries /metrics endpoint in fast cycle
                     ;; we don't hit database each time.
                     5000)
@@ -728,8 +734,12 @@
                   #(subscribe/num-filters-prefixes subs-atom)
                   #(subscribe/num-firehose-filters subs-atom)
                   #(fulfill/num-active-fulfillments fulfill-atom))
-        ^DataSource db (store/init! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
-        _ (vreset! db-holder db)]
+        datasources (store/init! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
+        {:keys [^DataSource writeable-datasource ^DataSource readonly-datasource]} datasources
+        ;; we'll want a perptual single connection for writes which we must
+        ;; absolutely ensure we leverage from a single writer thread:
+        singleton-writeable-connection (.getConnection writeable-datasource)
+        _ (vreset! readonly-db-holder readonly-datasource)]
     (jetty/start-server!
       (populate-non-ws-handler!
         non-ws-handler-container
@@ -738,12 +748,13 @@
         nip05-json
         nip11-json
         metrics
-        db)
+        readonly-datasource)
       ws-handler-container
       (create-jetty-websocket-creator
         conf
         metrics
-        db
+        singleton-writeable-connection
+        readonly-datasource
         websocket-connections-registry
         subs-atom
         fulfill-atom)

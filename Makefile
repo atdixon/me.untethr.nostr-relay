@@ -15,6 +15,7 @@ dependency-sources:
 run:
 	clj \
 		-J-Dlogback.configurationFile=conf/logback.xml \
+		-J-Dspy.properties=conf/spy.properties \
 		-J-Xms1g -J-Xmx1g \
  		-M -m me.untethr.nostr.app
 
@@ -24,7 +25,10 @@ uberjar:
 
 .PHONY: run-uberjar
 run-uberjar:
-	java -Dlogback.configurationFile=conf/logback.xml \
+	java \
+		-Dlogback.configurationFile=conf/logback.xml \
+		-Dspy.properties=conf/spy.properties \
+		-Xms1g -Xmx1g \
 		-cp target/me.untethr.nostr-relay.jar \
 		clojure.main -m me.untethr.nostr.app
 

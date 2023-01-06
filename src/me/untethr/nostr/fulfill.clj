@@ -50,7 +50,7 @@
   (->Registry {} {}))
 
 (defn- fulfill-entirely!
-  [metrics db channel-id req-id cancelled?-vol filters target-row-id observer completion-callback]
+  [metrics readonly-db channel-id req-id cancelled?-vol filters target-row-id observer completion-callback]
   (try
     (let [tally (volatile! 0)]
       (metrics/time-fulfillment! metrics
@@ -65,7 +65,7 @@
             (when @cancelled?-vol
               (metrics/mark-fulfillment-interrupt! metrics)
               (reduced :cancelled)))
-          (jdbc/plan db (query/filters->query filters :target-row-id target-row-id :overall-limit 1000))))
+          (jdbc/plan readonly-db (query/filters->query filters :target-row-id target-row-id :overall-limit 1000))))
       (when-not @cancelled?-vol
         (completion-callback)
         (metrics/fulfillment-num-rows! metrics @tally)))
@@ -78,9 +78,9 @@
   "In most cases we'll want to use `submit!` fn for asynchronous fulfillment. However,
    upstream caller/s may wish to perform synchronous fulfillment for certain requests that
    are expected to answer quickly. Use with care!"
-  [metrics db channel-id req-id filters target-row-id observer eose-callback]
+  [metrics readonly-db channel-id req-id filters target-row-id observer eose-callback]
   (let [cancelled?-vol (volatile! false)]
-    (fulfill-entirely! metrics db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
+    (fulfill-entirely! metrics readonly-db channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
 
 (defn- add-to-registry!
   [fulfill-atom channel-id sid ^Future fut cancelled?-vol]
@@ -104,21 +104,21 @@
       (throw e))))
 
 (defn submit!
-  ^Future [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  ^Future [metrics readonly-db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
         f (.submit global-pool
-            ^Runnable (partial fulfill-entirely! metrics db channel-id req-id
+            ^Runnable (partial fulfill-entirely! metrics readonly-db channel-id req-id
                         cancelled?-vol filters target-row-id observer eose-callback))]
     (add-to-registry! fulfill-atom channel-id sid f cancelled?-vol)
     f))
 
 (defn- internal-fulfill-one-batch!
-  [metrics db filters target-row-id observer cancelled?-vol ^CompletableFuture overall-result-future]
+  [metrics readonly-db filters target-row-id observer cancelled?-vol ^CompletableFuture overall-result-future]
   ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
   ;; consider alternative: look into if we could somehow truly batch websocket events
   ;; back to clients?
-  (let [query-plan (jdbc/plan db
+  (let [query-plan (jdbc/plan readonly-db
                      (query/filters->query filters
                        :target-row-id target-row-id
                        :overall-limit batch-size))]
@@ -144,7 +144,7 @@
         query-plan))))
 
 (defn submit-use-batching!
-  ^Future [metrics db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  ^Future [metrics readonly-db fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
   (let [start-nanos (System/nanoTime)
         sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
@@ -155,7 +155,7 @@
         (fn batch-fn [use-target-row-id iteration-num]
           (try
             (let [fulfill-result (internal-fulfill-one-batch! metrics
-                                   db filters use-target-row-id observer
+                                   readonly-db filters use-target-row-id observer
                                    cancelled?-vol result-future)]
               (when-not (identical? fulfill-result :cancelled)
                 (let [[result-count min-rowid] fulfill-result]

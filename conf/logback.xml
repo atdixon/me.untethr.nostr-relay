@@ -8,11 +8,14 @@
 
     <appender name="FILE"
               class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!--
+        see https://p6spy.readthedocs.io/en/latest/configandusage.html
+        this is the active file that we log to...
+        -->
+        <file>logs/nostr-relay.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <!-- note: if logs roll too fast based on size triggering then, we like
-               to have a granular (here, minute) filename so we don't rollover onto
-               the self-same file -->
-            <fileNamePattern>logs/nostr-relay-%d{yyyy-MM-dd-HH-mm}.log</fileNamePattern>
+            <!-- ...and this is the file we rollover to: -->
+            <fileNamePattern>logs/nostr-relay-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
             <totalSizeCap>5GB</totalSizeCap>
         </rollingPolicy>
@@ -26,11 +29,14 @@
 
     <appender name="FILE_P6SPY"
               class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!--
+        see https://p6spy.readthedocs.io/en/latest/configandusage.html
+        this is the active file that we log to...
+        -->
+        <file>logs/p6spy.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <!-- note: if logs roll too fast based on size triggering then, we like
-               to have a granular (here, minute) filename so we don't rollover onto
-               the self-same file -->
-            <fileNamePattern>logs/p6spy-%d{yyyy-MM-dd-HH-mm}.log</fileNamePattern>
+            <!-- ...and this is the file we rollover to: -->
+            <fileNamePattern>logs/p6spy-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
             <totalSizeCap>5GB</totalSizeCap>
         </rollingPolicy>
@@ -55,7 +61,6 @@
     </logger>
     -->
 
-    <!-- p6spy -->
     <logger name="p6spy" additivity="false">
         <appender-ref ref="FILE_P6SPY" />
     </logger>

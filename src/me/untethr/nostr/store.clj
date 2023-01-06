@@ -8,6 +8,7 @@
            (com.p6spy.engine.spy P6DataSource)
            (com.zaxxer.hikari HikariConfig HikariDataSource)
            (com.zaxxer.hikari.metrics.dropwizard CodahaleMetricsTrackerFactory)
+           (java.sql Connection)
            (javax.sql DataSource)
            (org.sqlite SQLiteException)))
 
@@ -15,10 +16,13 @@
   [^DataSource datasource]
   (P6DataSource. datasource))
 
-(defn- create-hikari-datasource
+(defn- create-readonly-hikari-datasource
   ^HikariDataSource [jdbc-url]
   (HikariDataSource.
     (doto (HikariConfig.)
+      ;; this must be set on Hikari pool but will fail if the underlying jdbc
+      ;; connection doesn't establish the connection as readonly (see below)
+      (.setReadOnly true)
       (.setJdbcUrl jdbc-url)
       ;; note: jdbc.next with-transaction disables and re-enables auto-commit
       ;; before/after running the transaction.
@@ -43,31 +47,33 @@
       ;; less than conn timeout. when HikariCP takes a connection from pool
       ;; this is how long it's allowed to validate it before returning it
       ;; from getConnection.
-      ;; Trying 15s for now for leakDetectionThreshold.
-      (.setLeakDetectionThreshold (* 15 1000)))))
+      ;; Trying 25s for now for leakDetectionThreshold.
+      (.setLeakDetectionThreshold (* 25 1000)))))
 
-(defn- create-connection-pool
+(defn- create-readonly-connection-pool
   "Create a connection pool. Our configuration here has all of our connections
    living forever in a fixed-sized pool. While the pool may or may not give us
    enormous benefit over a file-sys based db like sqlite, it's integration with
    metrics gives us a ton of observability with what's happening with the db."
   (^DataSource [jdbc-url]
-   (create-connection-pool jdbc-url nil))
+   (create-readonly-connection-pool jdbc-url nil))
   (^DataSource [jdbc-url ^MetricRegistry metric-registry]
-   (let [the-pool (create-hikari-datasource jdbc-url)]
+   (let [the-pool (create-readonly-hikari-datasource jdbc-url)]
      (when (some? metric-registry)
        (.setMetricsTrackerFactory the-pool
          (CodahaleMetricsTrackerFactory. metric-registry)))
      the-pool)))
 
-(def get-unpooled-datasource*
+(def get-unpooled-writeable-datasource*
   (memoize
     #(jdbc/get-datasource (str "jdbc:sqlite:" %))))
 
-(def get-datasource*
+(def get-readonly-datasource*
   (memoize
     #(wrap-datasource-with-p6spy
-       (create-connection-pool (str "jdbc:sqlite:" %1) %2))))
+       ;; note: open_mode=1 which creates readonly sqlite connections; with this
+       ;; enabled we're free and ought to setReadOnly on the Hikari pool as well.
+       (create-readonly-connection-pool (str "jdbc:sqlite:" %1 "?open_mode=1") %2))))
 
 (defn- comment-line?
   [line]
@@ -84,11 +90,11 @@
               (recur (drop-while comment-line? lines) acc)))
           acc)))))
 
-(defn apply-schema! [db]
-  {:pre [(some? db)]}
+(defn apply-schema! [writeable-db]
+  {:pre [(some? writeable-db)]}
   (doseq [statement (parse-schema)]
     (try
-      (jdbc/execute-one! db [statement])
+      (jdbc/execute-one! writeable-db [statement])
       (catch SQLiteException e
         (when-not
           (and
@@ -97,12 +103,22 @@
           (throw e))))))
 
 (defn init!
-  ^DataSource [path ^MetricRegistry metric-registry]
-  (doto (get-datasource* path metric-registry)
-    apply-schema!))
+  [path ^MetricRegistry metric-registry]
+  {:readonly-datasource
+   (get-readonly-datasource* path metric-registry)
+   :writeable-datasource
+   (doto (get-unpooled-writeable-datasource* path)
+     apply-schema!)})
 
 (comment
   (init! "./n.db" nil))
+
+;; --
+
+(defn checkpoint!
+  [singleton-db-conn]
+  {:pre [(instance? Connection singleton-db-conn)]}
+  (jdbc/execute-one! singleton-db-conn ["PRAGMA wal_checkpoint(RESTART);"]))
 
 ;; --
 
@@ -112,15 +128,15 @@
   (:res (jdbc/execute-one! db ["select max(rowid) as res from n_events"])))
 
 (defn insert-channel!
-  [db channel-id ip-address]
-  (jdbc/execute-one! db
+  [writeable-db channel-id ip-address]
+  (jdbc/execute-one! writeable-db
     ["insert or ignore into channels (channel_id, ip_addr) values (?,?)"
      channel-id ip-address]))
 
 (defn- insert-event!*
-  [db id pubkey created-at kind raw channel-id]
+  [writeable-db id pubkey created-at kind raw channel-id]
   {:post [(or (nil? %) (contains? % :rowid))]}
-  (jdbc/execute-one! db
+  (jdbc/execute-one! writeable-db
     [(str
        "insert or ignore into n_events"
        " (id, pubkey, created_at, kind, raw_event, channel_id)"
@@ -130,14 +146,14 @@
 
 (defn insert-event!
   "Answers inserted sqlite rowid or nil if row already exists."
-  ([db id pubkey created-at kind raw]
-   (insert-event! db id pubkey created-at kind raw nil))
-  ([db id pubkey created-at kind raw channel-id]
-   (:rowid (insert-event!* db id pubkey created-at kind raw channel-id))))
+  ([writeable-db id pubkey created-at kind raw]
+   (insert-event! writeable-db id pubkey created-at kind raw nil))
+  ([writeable-db id pubkey created-at kind raw channel-id]
+   (:rowid (insert-event!* writeable-db id pubkey created-at kind raw channel-id))))
 
 (defn insert-e-tag!
-  [db source-event-id tagged-event-id]
-  (jdbc/execute-one! db
+  [writeable-db source-event-id tagged-event-id]
+  (jdbc/execute-one! writeable-db
     [(str
        "insert or ignore into e_tags"
        " (source_event_id, tagged_event_id)"
@@ -145,8 +161,8 @@
      source-event-id tagged-event-id]))
 
 (defn insert-p-tag!
-  [db source-event-id tagged-pubkey]
-  (jdbc/execute-one! db
+  [writeable-db source-event-id tagged-pubkey]
+  (jdbc/execute-one! writeable-db
     [(str
        "insert or ignore into p_tags"
        " (source_event_id, tagged_pubkey)"
@@ -154,8 +170,8 @@
      source-event-id tagged-pubkey]))
 
 (defn insert-x-tag!
-  [db source-event-id generic-tag tagged-value]
-  (jdbc/execute-one! db
+  [writeable-db source-event-id generic-tag tagged-value]
+  (jdbc/execute-one! writeable-db
     [(str
        "insert or ignore into x_tags"
        " (source_event_id, generic_tag, tagged_value)"

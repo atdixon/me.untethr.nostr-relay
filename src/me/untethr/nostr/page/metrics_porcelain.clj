@@ -29,11 +29,11 @@
     (when (= 1 (count all-matches))
       (first all-matches))))
 
-(defn- active-db-connections
+(defn- active-readonly-db-connections
   [metrics]
   (value-of (get-gauge (:codahale-registry metrics) "ActiveConnections")))
 
-(defn- pending-db-connections
+(defn- pending-readonly-db-connections
   [metrics]
   (value-of (get-gauge (:codahale-registry metrics) "PendingConnections")))
 
@@ -75,8 +75,8 @@
        " ("
        [:b (value-of metrics :active-firehose-filters)] " firehose filters; "
        [:b (value-of metrics :active-filter-prefixes)] " prefix filters)."]
-      [:div [:b (active-db-connections metrics)] " active db connections ("
-       [:b (pending-db-connections metrics)] " pending!)"]
+      [:div [:b (active-readonly-db-connections metrics)] " active readonly db connections ("
+       [:b (pending-readonly-db-connections metrics)] " pending!)"]
       [:br]
       [:div [:span "Among "
              [:b (count-of metrics :websocket-lifetime-secs)] " websocket channels"
@@ -104,6 +104,8 @@
       [:div "Problem: " (count-of metrics :problem-message)]
       [:h3 "Other"]
       [:div "JVM Heap Usage: " (jvm-memory-summary-as-markup (:jvm-memory-usage metrics))]
+      [:br]
+      [:div "Quick row count: " (value-of metrics :quick-row-count)]
       [:br]
       [:div "Channel insert: " (histo-summary-as-markup metrics :insert-channel-timer) " ms"]
       ]]))

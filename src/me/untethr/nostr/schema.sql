@@ -5,7 +5,12 @@ pragma encoding = 'UTF-8';
 --
 pragma journal_mode = WAL;
 --
-pragma main.synchronous = NORMAL;
+pragma journal_size_limit = 16777216;
+--
+-- pragma wal_autocheckpoint = -1;
+pragma wal_autocheckpoint = 1000;
+--
+pragma synchronous = NORMAL;
 --
 pragma foreign_keys = OFF;
 --

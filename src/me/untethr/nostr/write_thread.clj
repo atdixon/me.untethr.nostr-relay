@@ -1,5 +1,7 @@
 (ns me.untethr.nostr.write-thread
-  (:require [clojure.tools.logging :as log])
+  (:require [clojure.tools.logging :as log]
+            [me.untethr.nostr.store :as store]
+            [me.untethr.nostr.util :as util])
   (:import (com.google.common.util.concurrent FutureCallback Futures ListenableFuture ListeningExecutorService MoreExecutors ThreadFactoryBuilder)
            (java.util.concurrent ExecutorService Executors Future ThreadFactory)))
 
@@ -30,14 +32,30 @@
     ;; for now, run listeners on our single thread executor
     single-event-thread))
 
+(defn- enq-checkpoint!
+  [singleton-db-conn _]
+  (.submit single-event-thread
+    ^Runnable
+    (fn []
+      (let [start-ns (System/nanoTime)]
+        (store/checkpoint! singleton-db-conn)
+        (log/debugf "checkpointed db (%d ms)"
+          (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
+
 (defn run-async!
-  (^ListenableFuture [task-fn]
-   {:pre [(fn? task-fn)]}
-   (.submit single-event-thread
-     (reify Callable
-       (call [_this]
-         (task-fn)))))
-  (^ListenableFuture [task-fn success-fn failure-fn]
-   (doto
-     (run-async! task-fn)
-     (add-callback! success-fn failure-fn))))
+  ^ListenableFuture [singleton-db-conn task-fn success-fn failure-fn]
+  {:pre [(fn? task-fn) (fn? success-fn) (fn? failure-fn)]}
+  (doto
+    (.submit single-event-thread
+      (reify Callable
+        (call [_this]
+          (task-fn singleton-db-conn))))
+    ;; for now, after every write we'll *enqueue* a full checkpoint; if
+    ;; there's other write work behind us our checkpoint won't delay any
+    ;; of that. (consider if work patterns + this behavior have any impact
+    ;; on readers and if we should have a diff. checkpoint strategy)
+    ;;  disabled for now -- using autocheckpointing:
+    #_(add-callback!
+      (partial enq-checkpoint! singleton-db-conn)
+      (fn []))
+    (add-callback! success-fn failure-fn)))

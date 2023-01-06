@@ -118,13 +118,17 @@
           ;; so this is unexpected...
           (log/warn "unexpected request"
             {:request-url (str (.getRequestURL req))
-             :selected-headers {:connection
-                                (.getHeader req "Connection")
-                                :upgrade
-                                (.getHeader req "Upgrade")
-                                :header-names
-                                (vec (enumeration-seq (.getHeaderNames req)))}})
-          (update-response! resp {:status 404}))))))
+             :selected-headers {:connection (.getHeader req "Connection")
+                                :upgrade (.getHeader req "Upgrade")
+                                :user-agent (.getHeader req "User-Agent")
+                                :header-names (vec (enumeration-seq
+                                                     (.getHeaderNames req)))}})
+          ;; we answer 200 here with an unexpected request message -- 200, b/c
+          ;; in the wild, we've seen bot health check requests with eg. Connection:
+          ;; upgrade but no Upgrade header and we want to let them know we're up.
+          (update-response! resp {:status 200
+                                  :content-type "text/plain"
+                                  :body "Unexpected request."}))))))
 
 (defn- disable-default-servlet!
   [^ServletContextHandler servlet-context-handler]

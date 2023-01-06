@@ -37,6 +37,7 @@ This is a script on my server, `/home/aaron/run-relay.sh`:
 /usr/lib/jvm/jdk-17/bin/java \
     -Xms1g -Xmx1g \
     -Dlogback.configurationFile=conf/logback.xml \
+    -Dspy.properties=conf/spy.properties \
     -cp me.untethr.nostr-relay.jar \
     clojure.main -m me.untethr.nostr.app
 ```
