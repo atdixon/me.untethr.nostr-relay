@@ -2,6 +2,7 @@
 hostname: "nostr-relay.untethr.me"
 
 http:
+  host: 127.0.0.1
   port: 9090
 
 sqlite:

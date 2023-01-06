@@ -748,6 +748,7 @@
         subs-atom
         fulfill-atom)
       {:port (:http-port conf)
+       :host (:http-host conf)
        :max-ws 4194304})))
 
 (defn- slurp-json*
