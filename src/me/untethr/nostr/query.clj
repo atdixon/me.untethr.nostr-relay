@@ -2,7 +2,7 @@
   (:require
     [clojure.string :as str]
     [me.untethr.nostr.common :as common]
-    [me.untethr.nostr.validation :as validation]))
+    [me.untethr.nostr.common.validation :as validation]))
 
 (defn- build-vals-and-prefixes-or-clause
   [column-name whole-vals prefixes]
@@ -22,7 +22,7 @@
      whole-vals]))
 
 (defn- filter->base*
-  [ids kinds since until authors e# p# generic-tags]
+  [ids kinds since until authors e# p# generic-tags & {:keys [id-col-name] :or {id-col-name "id"}}]
   {:post [(vector? (second %))]}
   (let [{ids-prefixes false ids-whole true} (group-by (comp some? validation/hex-str-64?) ids)
         {authors-prefixes false authors-whole true} (group-by (comp some? validation/hex-str-64?) authors)]
@@ -35,15 +35,15 @@
       (cond-> []
         ;; note: order here may govern query plan
         (not-empty authors)
-        (conj (build-vals-and-prefixes-or-clause "pubkey" authors-whole authors-prefixes))
+        (conj (build-vals-and-prefixes-or-clause "v.pubkey" authors-whole authors-prefixes))
         (some? since)
-        (conj ["created_at >= ?" [since]])
+        (conj ["v.created_at >= ?" [since]])
         (not-empty ids)
-        (conj (build-vals-and-prefixes-or-clause "id" ids-whole ids-prefixes))
+        (conj (build-vals-and-prefixes-or-clause id-col-name ids-whole ids-prefixes))
         (not-empty kinds)
-        (conj [(format "kind in (%s)" (str/join "," (repeat (count kinds) "?"))) kinds])
+        (conj [(format "v.kind in (%s)" (str/join "," (repeat (count kinds) "?"))) kinds])
         (some? until)
-        (conj ["created_at <= ?" [until]])
+        (conj ["v.created_at <= ?" [until]])
         (not-empty e#)
         (conj [(format "e.tagged_event_id in (%s)" (str/join "," (repeat (count e#) "?"))) e#])
         (not-empty p#)
@@ -57,17 +57,54 @@
                  (str/join "," (repeat (count tag-values) "?"))) tag-values])
             generic-tags))))))
 
-(def ^:private join-e ["e_tags e" "e.source_event_id = v.id"])
-(def ^:private join-p ["p_tags p" "p.source_event_id = v.id"])
-(def ^:private join-x ["x_tags x" "x.source_event_id = v.id"])
+(def ^:private ^:deprecated join-e ["e_tags e" "e.source_event_id = v.id"])
+(def ^:private ^:deprecated join-p ["p_tags p" "p.source_event_id = v.id"])
+(def ^:private ^:deprecated join-x ["x_tags x" "x.source_event_id = v.id"])
 
-(defn- ->non-e-or-p-generic-tags*
+(def ^:private join-e-new ["e_tags e" "e.source_event_id = v.event_id"])
+(def ^:private join-p-new ["p_tags p" "p.source_event_id = v.event_id"])
+(def ^:private join-x-new ["x_tags x" "x.source_event_id = v.event_id"])
+
+(defn ->non-e-or-p-generic-tags
   [filter]
   (select-keys filter common/allow-filter-tag-queries-sans-e-and-p-set))
 
-(defn- generic-filter->query
+(defn generic-filter->query-new
+  [cols-str {:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter}
+   & {:keys [?endcap-row-id ?endcap-created-at override-limit]}]
+  (let [generic-tags (->non-e-or-p-generic-tags filter)
+        [base-expr base-params] (filter->base* ids kinds since until authors e# p# generic-tags
+                                  :id-col-name "event_id")
+        joins (cond-> []
+                (not-empty e#) (conj join-e-new)
+                (not-empty p#) (conj join-p-new)
+                (not-empty generic-tags) (conj join-x-new))
+        join-clause (str/join " cross join "
+                      (map #(nth % 0) joins))
+        join-expr (str/join " and "
+                    (map #(nth % 1) joins))
+        q (cond
+            (empty? base-expr)
+            (format "select %s from n_events v" cols-str)
+            (empty? join-clause)
+            (format "select %s from n_events v where %s" cols-str base-expr)
+            :else
+            (format "select %s from %s cross join n_events v where %s and %s"
+              cols-str join-clause join-expr base-expr))
+        extra-clauses (cond-> []
+                        (some? ?endcap-created-at) (conj (str "v.created_at <= " ?endcap-created-at))
+                        (some? ?endcap-row-id) (conj (str "v.id <= " ?endcap-row-id))
+                        true (conj "v.deleted_ = 0"))
+        q (str q (if (empty? base-expr) " where " " and ") (str/join " and " extra-clauses))
+        q (if (empty? join-clause) q (str q " group by v.id")) ;; when joining don't produce duplicates
+        use-limit (or override-limit limit)]
+    (if (some? use-limit)
+      (apply vector (str q " order by v.created_at desc, v.id desc limit ?") (conj base-params use-limit))
+      (apply vector q base-params))))
+
+(defn generic-filter->query
   [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter} & {:keys [target-row-id]}]
-  (let [generic-tags (->non-e-or-p-generic-tags* filter)
+  (let [generic-tags (->non-e-or-p-generic-tags filter)
         [base-expr base-params] (filter->base* ids kinds since until authors e# p# generic-tags)
         joins (cond-> []
                 (not-empty e#) (conj join-e)
@@ -94,10 +131,13 @@
       ;; note: can't do order by w/in union query unless you leverage sub-queries like so
       ;; (ie, this will allow us to union *this* query with others in the same set of
       ;; filters):
+      ;; BIG NOTE: limiting here and using our rowid plus outer overall-limit approach
+      ;;  for paging back through results means we'll certainly over-deliver in some cases
+      ;;  ... because we're not deducting from the filter limit each time we handle a page.
       (apply vector (str "select rowid from (" q " order by v.created_at desc limit ?)") (conj base-params limit))
       (apply vector q base-params))))
 
-(defn filters->query
+(defn ^:deprecated filters->query
   "Convert nostr filters to SQL query.
 
    Provided filters must be non-empty.

@@ -2,13 +2,15 @@
   (:require
     [clojure.pprint :as pprint]
     [clojure.set :as set]
+    [clojure.string :as str]
     [clojure.walk :as walk]
     [me.untethr.nostr.conf]
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.query :as query]
+    [me.untethr.nostr.query.engine :as engine]
     [me.untethr.nostr.util :as util]
-    [me.untethr.nostr.validation :as validation]
+    [me.untethr.nostr.common.validation :as validation]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs])
   (:import (me.untethr.nostr.conf Conf)))
@@ -70,16 +72,25 @@
        -XGET <your-relay-host>/q \\
        --data '[{\"authors\":[\"<pubkey>\"]}]'
    "
-  [^Conf conf readonly-db prepare-req-filters-fn req-query-params req-body]
+  [^Conf conf readonly-db readonly-db-kv prepare-req-filters-fn req-query-params req-body]
   (let [overall-start-nanos (System/nanoTime)
         query-params-as-filter (some-> req-query-params query-params->filter)
         body-as-filters (some->> req-body not-empty json-facade/parse)
         use-filters (or (some-> query-params-as-filter vector) body-as-filters [{}])
         _ (validate-filters! use-filters)
         prepared-filters (prepare-req-filters-fn conf use-filters)
-        as-query (query/filters->query prepared-filters :overall-limit 100)]
+        ;; we'll just do a first page query so results will be capped to default page-size
+        active-filters (mapv #(engine/init-active-filter % :page-size 50) prepared-filters)
+        as-query (engine/active-filters->query active-filters)]
     (let [query-start-nanos (System/nanoTime)
-          rows (jdbc/execute! readonly-db as-query
+          event-ids (mapv :event_id
+                      (jdbc/execute! readonly-db as-query
+                        {:builder-fn rs/as-unqualified-lower-maps}))
+          rows (jdbc/execute! readonly-db-kv
+                 (apply vector
+                   (format "select * from n_kv_events where event_id in (%s)"
+                     (str/join "," (repeat (count event-ids) "?")))
+                   event-ids)
                  {:builder-fn rs/as-unqualified-lower-maps})
           query-duration-millis (util/nanos-to-millis (- (System/nanoTime) query-start-nanos))
           rows' (mapv

@@ -1,7 +1,7 @@
 (ns test.support
   (:require [clojure.test :refer :all]
             [next.jdbc :as jdbc]
-            [me.untethr.nostr.store :as store]
+            [me.untethr.nostr.common.store :as store]
             [me.untethr.nostr.app :as app]
             [me.untethr.nostr.common.json-facade :as json-facade]
             [clojure.java.io :as io]))
@@ -17,17 +17,36 @@
      (take len
        (repeatedly #(nth hex-chars (rand-int (count hex-chars))))))))
 
-(defmacro with-memory-db
+(defmacro ^:deprecated with-memory-db
   [bindings & body]
   `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
-     (store/apply-schema! db#)
+     (store/apply-schema! db# "schema.sql")
      (let [~bindings [db#]]
        ~@body)))
 
-(defn load-data
+(defmacro with-memory-db-new-schema
+  [bindings & body]
+  `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
+     (store/apply-schema! db# "schema-new.sql")
+     (let [~bindings [db#]]
+       ~@body)))
+
+(defmacro with-memory-db-kv-schema
+  [bindings & body]
+  `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
+     (store/apply-schema! db# "schema-kv.sql")
+     (let [~bindings [db#]]
+       ~@body)))
+
+(defn ^:deprecated load-data
   [db parsed-events]
   (doseq [o parsed-events]
     (#'app/store-event! db o (#'json-facade/write-str* o))))
+
+(defn load-data-new-schema
+  [db db-kv parsed-events]
+  (doseq [o parsed-events]
+    (store/index-and-store-event! db db-kv o (#'json-facade/write-str* o))))
 
 (defmacro with-regression-data
   [bindings & body]

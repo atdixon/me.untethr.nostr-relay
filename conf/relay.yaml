@@ -6,7 +6,8 @@ http:
   port: 9090
 
 sqlite:
-  file: "n.db"
+  file: "nn.db"
+  file-kv: "nn-kv.db"
 
 # This is optional. If not specified, the relay will store events of any numeric
 # kind. Otherwise, the relay will (quietly) not store events not whitelisted

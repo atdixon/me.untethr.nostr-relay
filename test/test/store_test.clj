@@ -1,9 +1,14 @@
 (ns test.store-test
-  (:require [clojure.test :refer :all]
-            [test.support :as support]
-            [me.untethr.nostr.store :as store]
-            [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
+  (:require
+    [clojure.string :as str]
+    [clojure.test :refer :all]
+    [me.untethr.nostr.common.json-facade :as json-facade]
+    [me.untethr.nostr.query :as query]
+    [me.untethr.nostr.query.engine :as engine]
+    [test.support :as support]
+    [me.untethr.nostr.common.store :as store]
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs]))
 
 (deftest idempotent-insert-test
   (support/with-memory-db [db]
@@ -38,3 +43,85 @@
       (is (= [["id8" 15] ["id9" 20]] (mapv (juxt :id :created_at) (get-in g [["pk1" 1]]))))
       (is (= [["id10" 20]] (mapv (juxt :id :created_at) (get-in g [["pk1" 3]]))))
       (is (= [["id6" 5]] (mapv (juxt :id :created_at) (get-in g [["pk0" 3]])))))))
+
+(defn- count-filter-results [db f]
+  (count
+    (jdbc/execute! db
+      (engine/filter->query f
+        :endcap-row-id Integer/MAX_VALUE
+        :override-limit Integer/MAX_VALUE))))
+
+(deftest simple-delete-test
+  (support/with-memory-db-new-schema [db]
+    ;; note for this test we can get away with unverified invalid raw data here.
+    ;; [id pubkey created_at kind tags]
+    (store/store-event-new-schema!- db
+      {:id "A" :pubkey "x" :created_at 0 :kind 1
+       :tags [["p" "p0"] ["p" "p1"] ["e" "e0"] ["t" "t0"]]})
+    (store/store-event-new-schema!- db
+      {:id "B" :pubkey "y" :created_at 0 :kind 1
+       :tags [["p" "p0"]]})
+    (store/store-event-new-schema!- db
+      {:id "C" :pubkey "y" :created_at 0 :kind 1
+       :tags [["p" "p0"] ["p" "p1"] ["e" "e0"] ["t" "t0"] ["t" "t1"]]})
+    (is (= 1 (count-filter-results db {:ids ["A"]})))
+    (is (= 1 (count-filter-results db {:ids ["B"]})))
+    (is (= 1 (count-filter-results db {:ids ["C"]})))
+    (is (= 3 (count-filter-results db {:#p ["p0"]})))
+    (is (= 2 (count-filter-results db {:#e ["e0"]})))
+    (is (= 2 (count-filter-results db {:#t ["t0"]})))
+    (is (= 1 (count-filter-results db {:#t ["t1"]})))
+    ;; we have a trigger for true deletion ... we want to make sure it works
+    ;; ... b/c it will be nice just to purge n_events and get foreign refs deleted
+    ;; too
+    (is
+      (= 1 (:next.jdbc/update-count
+             (jdbc/execute-one! db ["delete from n_events where event_id = 'A';"]
+               {:builder-fn rs/as-unqualified-lower-maps}))))
+    (is (= 0 (count-filter-results db {:ids ["A"]})))
+    (is (= 1 (count-filter-results db {:ids ["B"]})))
+    (is (= 1 (count-filter-results db {:ids ["C"]})))
+    (is (= 2 (count-filter-results db {:#p ["p0"]})))
+    (is (= 1 (count-filter-results db {:#e ["e0"]})))
+    (is (= 1 (count-filter-results db {:#t ["t0"]})))
+    (is (= 1 (count-filter-results db {:#t ["t1"]})))
+    ;; but usually we'll simple set deleted_ bit so let's test that too
+    (is
+      (= 1 (:next.jdbc/update-count
+             (jdbc/execute-one! db ["update n_events set deleted_ = 1 where event_id = 'C';"]
+               {:builder-fn rs/as-unqualified-lower-maps}))))
+    (is (= 0 (count-filter-results db {:ids ["A"]})))
+    (is (= 1 (count-filter-results db {:ids ["B"]})))
+    (is (= 0 (count-filter-results db {:ids ["C"]})))
+    (is (= 1 (count-filter-results db {:#p ["p0"]})))
+    (is (= 0 (count-filter-results db {:#e ["e0"]})))
+    (is (= 0 (count-filter-results db {:#t ["t0"]})))
+    (is (= 0 (count-filter-results db {:#t ["t1"]})))))
+
+(deftest simple-query-and-lookup-test
+  (let [e-obj {:id "A" :pubkey "x" :created_at 0 :kind 1
+               :tags [["p" "p0"] ["p" "p1"] ["e" "e0"] ["t" "t0"]]}
+        raw-e (json-facade/write-str* e-obj)]
+    (support/with-memory-db-kv-schema [db-kv]
+      (support/with-memory-db-new-schema [db]
+        (store/index-and-store-event! db db-kv e-obj raw-e)
+        (let [q (engine/active-filters->query
+                  [(engine/init-active-filter {:ids ["A"]})])
+              r (jdbc/execute! db q
+                  {:builder-fn rs/as-unqualified-lower-maps})
+              ids (mapv :event_id r)
+              fetched (transduce
+                        ;; note: if observer throws exception we catch below and for
+                        ;; now call it unexpected
+                        (map :raw_event)
+                        (completing
+                          (fn [acc raw-event]
+                            (conj acc raw-event)))
+                        []
+                        (jdbc/plan db-kv
+                          (apply vector
+                            (format
+                              "select raw_event from n_kv_events where event_id in (%s)"
+                              (str/join "," (repeat (count ids) "?")))
+                            ids)))]
+          (is (= [raw-e] fetched)))))))

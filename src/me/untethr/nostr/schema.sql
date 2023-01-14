@@ -7,6 +7,12 @@ pragma journal_mode = WAL;
 --
 pragma journal_size_limit = 16777216;
 --
+-- https://www.sqlite.org/pragma.html#pragma_page_size
+-- https://www2.sqlite.org/matrix/intern-v-extern-blob.html
+--   (value is bytes and must be power of 2)
+-- pragma page_size = bytes;
+--
+--
 -- pragma wal_autocheckpoint = -1;
 pragma wal_autocheckpoint = 1000;
 --

@@ -10,7 +10,7 @@
            (org.eclipse.jetty.server.handler AbstractHandler HandlerList StatisticsHandler)
            (org.eclipse.jetty.servlet ServletContextHandler ServletHolder)
            (org.eclipse.jetty.util.thread QueuedThreadPool)
-           (org.eclipse.jetty.websocket.api BatchMode ExtensionConfig RemoteEndpoint WebSocketAdapter WriteCallback)
+           (org.eclipse.jetty.websocket.api BatchMode RemoteEndpoint WebSocketAdapter WriteCallback)
            (org.eclipse.jetty.websocket.server JettyServerUpgradeRequest JettyServerUpgradeResponse JettyWebSocketCreator JettyWebSocketServerContainer)
            (org.eclipse.jetty.websocket.server.config JettyWebSocketServletContainerInitializer JettyWebSocketServletContainerInitializer$Configurator)))
 
@@ -193,6 +193,13 @@
     (let [actual-val (.getHeader req header-name)]
       (or (nil? actual-val)
         (not (.equalsIgnoreCase actual-val header-val))))))
+
+(defn header-missing-req-pred
+  [header-name]
+  (fn [^HttpServletRequest req]
+    (let [actual-val (.getHeader req header-name)]
+      (or (nil? actual-val)
+        (str/blank? actual-val)))))
 
 ;; --
 

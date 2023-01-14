@@ -22,6 +22,8 @@
 
   com.bucket4j/bucket4j-core {:mvn/version "8.1.1"}
 
+  org.apache.commons/commons-compress {:mvn/version "1.22"}
+
   metrics-clojure/metrics-clojure {:mvn/version "2.10.0"}
   metrics-clojure-jvm/metrics-clojure-jvm {:mvn/version "2.10.0"}
   io.dropwizard.metrics/metrics-json {:mvn/version "4.2.15"}
@@ -42,8 +44,7 @@
                       org.clojure/data.csv {:mvn/version "1.0.1"}}
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
-  :perf {:extra-deps {criterium/criterium {:mvn/version "0.4.6"}
-                      com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.0.3"}}}
+  :perf {:extra-deps {criterium/criterium {:mvn/version "0.4.6"}}}
   :hacking {:extra-deps
             {org.bouncycastle/bcprov-jdk15on {:mvn/version "1.70"}
              org.graalvm.js/js {:mvn/version "22.2.0"}}}

@@ -5,7 +5,7 @@
     [clojure.string :as str]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.util :as util]
-    [me.untethr.nostr.validation :as validation]
+    [me.untethr.nostr.common.validation :as validation]
     [clojure.tools.logging :as log]
     [me.untethr.nostr.common :as common]
     [clojure.set :as set])
@@ -91,6 +91,7 @@
   [metrics subs-atom {:keys [id pubkey created_at kind tags] :as _e} raw-event]
   (let [^Set observers (Sets/newIdentityHashSet)
         ^Set candidates (candidate-filters @subs-atom id pubkey tags)]
+    ;; todo note that if there are any candidate filters for specific kinds of queries, then we could skip filter-matches? check
     (metrics/notify-num-candidates! metrics (.size candidates))
     ;; we use a snapshot of subscriptions; if a cancellation arrives
     ;; as we're notifying here we may notify after cancellation. so be it.

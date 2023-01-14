@@ -12,7 +12,8 @@
    (cond
      (instance? Counter obj) (.getCount ^Counter obj)
      (instance? Histogram obj) (.getCount ^Histogram obj)
-     (instance? Meter obj) (.getCount ^Meter obj))))
+     (instance? Meter obj) (.getCount ^Meter obj)
+     (instance? Timer obj) (.getCount ^Timer obj))))
 
 (defn- value-of
   ([metrics k]
@@ -24,6 +25,7 @@
 
 (defn- get-gauge
   [^MetricRegistry registry suffix]
+  {:post [(some? %)]}
   (let [all-matches
         (vals (.getGauges registry (MetricFilter/endsWith suffix)))]
     (when (= 1 (count all-matches))
@@ -31,11 +33,31 @@
 
 (defn- active-readonly-db-connections
   [metrics]
-  (value-of (get-gauge (:codahale-registry metrics) "ActiveConnections")))
+  (or
+    (some->
+      (get-gauge (:codahale-registry metrics) "db-kv-readonly.pool.ActiveConnections")
+      (value-of)) "???"))
 
 (defn- pending-readonly-db-connections
   [metrics]
-  (value-of (get-gauge (:codahale-registry metrics) "PendingConnections")))
+  (or
+    (some->
+      (get-gauge (:codahale-registry metrics) "db-kv-readonly.pool.PendingConnections")
+      (value-of)) "???"))
+
+(defn- active-readonly-db-kv-connections
+  [metrics]
+  (or
+    (some->
+      (get-gauge (:codahale-registry metrics) "db-kv-readonly.pool.ActiveConnections")
+      (value-of)) "???"))
+
+(defn- pending-readonly-db-kv-connections
+  [metrics]
+  (or
+    (some->
+      (get-gauge (:codahale-registry metrics) "db-kv-readonly.pool.PendingConnections")
+      (value-of)) "???"))
 
 (defn- histo-summary-as-markup
   ([metrics k]
@@ -76,7 +98,9 @@
        [:b (value-of metrics :active-firehose-filters)] " firehose filters; "
        [:b (value-of metrics :active-filter-prefixes)] " prefix filters)."]
       [:div [:b (active-readonly-db-connections metrics)] " active readonly db connections ("
-       [:b (pending-readonly-db-connections metrics)] " pending!)"]
+       [:b (pending-readonly-db-kv-connections metrics)] " pending!)"]
+      [:div [:b (active-readonly-db-connections metrics)] " active readonly db kv connections ("
+       [:b (pending-readonly-db-kv-connections metrics)] " pending!)"]
       [:br]
       [:div [:span "Among "
              [:b (count-of metrics :websocket-lifetime-secs)] " websocket channels"
@@ -90,6 +114,8 @@
       [:div (histo-summary-as-markup metrics :fulfillment-overall-timer) " ms each overall"
        " (serving " (histo-summary-as-markup metrics :fulfillment-num-rows) " rows.)"]
       [:br]
+      [:div [:b (count-of metrics :fulfillment-overall-timer)] " overall fulfillments completed"
+       " (" (count-of metrics :fulfillment-timer) " pages completed)."]
       [:div [:b (count-of metrics :fulfillment-interrupt)] " cancellations."]
       [:div [:b (count-of metrics :fulfillment-error)] " errors."]
       [:h3 "Events"]
@@ -98,6 +124,7 @@
        " (" (histo-summary-as-markup metrics :notify-num-candidates) " filter candidates)"]
       [:div "Store: " (histo-summary-as-markup metrics :store-event-timer) " ms"]
       [:br]
+      [:div "Stored (or replaced): " (count-of metrics :stored-event)]
       [:div "Duplicate: " (count-of metrics :duplicate-event)]
       [:div "Rejected: " (count-of metrics :rejected-event)]
       [:div "Invalid: " (count-of metrics :invalid-event)]

@@ -1,6 +1,6 @@
 (ns me.untethr.nostr.write-thread
   (:require [clojure.tools.logging :as log]
-            [me.untethr.nostr.store :as store]
+            [me.untethr.nostr.common.store :as store]
             [me.untethr.nostr.util :as util])
   (:import (com.google.common.util.concurrent FutureCallback Futures ListenableFuture ListeningExecutorService MoreExecutors ThreadFactoryBuilder)
            (java.util.concurrent ExecutorService Executors Future ThreadFactory)))
@@ -20,6 +20,8 @@
 (defonce ^ListeningExecutorService single-event-thread
   (MoreExecutors/listeningDecorator (create-single-thread-executor)))
 
+(defonce checkpoint-enqueued?-vol (volatile! false))
+
 (defn add-callback!
   [^ListenableFuture fut success-fn failure-fn]
   {:pre [(fn? success-fn) (fn? failure-fn)]}
@@ -33,29 +35,40 @@
     single-event-thread))
 
 (defn- enq-checkpoint!
-  [singleton-db-conn _]
+  [singleton-db-conn single-db-kv-conn _]
   (.submit single-event-thread
     ^Runnable
     (fn []
       (let [start-ns (System/nanoTime)]
         (store/checkpoint! singleton-db-conn)
         (log/debugf "checkpointed db (%d ms)"
+          (util/nanos-to-millis (- (System/nanoTime) start-ns))))))
+  (.submit single-event-thread
+    ^Runnable
+    (fn []
+      (vreset! checkpoint-enqueued?-vol false)
+      (let [start-ns (System/nanoTime)]
+        (store/checkpoint! single-db-kv-conn)
+        (log/debugf "checkpointed kv db (%d ms)"
           (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
 
 (defn run-async!
-  ^ListenableFuture [singleton-db-conn task-fn success-fn failure-fn]
+  ^ListenableFuture [singleton-db-conn single-db-kv-conn task-fn success-fn failure-fn]
   {:pre [(fn? task-fn) (fn? success-fn) (fn? failure-fn)]}
   (doto
     (.submit single-event-thread
       (reify Callable
         (call [_this]
-          (task-fn singleton-db-conn))))
+          (task-fn singleton-db-conn single-db-kv-conn))))
     ;; for now, after every write we'll *enqueue* a full checkpoint; if
     ;; there's other write work behind us our checkpoint won't delay any
     ;; of that. (consider if work patterns + this behavior have any impact
     ;; on readers and if we should have a diff. checkpoint strategy)
     ;;  disabled for now -- using autocheckpointing:
-    #_(add-callback!
-      (partial enq-checkpoint! singleton-db-conn)
-      (fn []))
+    (add-callback!
+      (fn [x]
+        (when-not @checkpoint-enqueued?-vol
+          (enq-checkpoint! singleton-db-conn single-db-kv-conn x)
+          (vreset! checkpoint-enqueued?-vol true)))
+      (fn [_]))
     (add-callback! success-fn failure-fn)))

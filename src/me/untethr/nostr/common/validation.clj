@@ -1,4 +1,4 @@
-(ns me.untethr.nostr.validation
+(ns me.untethr.nostr.common.validation
   (:require
     [clojure.tools.logging :as log]
     [me.untethr.nostr.common :as common]
@@ -36,9 +36,13 @@
     (or (nil? content) (str/blank? content)) :err/no-content-in-metadata-event
     :else (if-let [parsed (try
                             (json-facade/parse content)
-                            (catch JsonParseException e nil))]
-            (when-not (valid-username? (:username parsed))
-              :err/invalid-username-in-metadata-event)
+                            (catch JsonParseException _e
+                              nil))]
+            (do
+              nil
+              ;; note: we've seen bad usernames in the wild, so let clients deal.
+              #_(when-not (valid-username? (:username parsed))
+                  :err/invalid-username-in-metadata-event))
             :err/bad-json-content-in-metadata-event)))
 
 (defn is-valid-id-form?

@@ -9,6 +9,7 @@
   [^String optional-hostname
    ^Long http-port
    ^String sqlite-file
+   ^String sqlite-kv-file
    ^RangeSet optional-supported-kinds-range-set
    ^Long optional-max-content-length
    ^Long optional-max-created-at-delta
@@ -19,6 +20,7 @@
 (defn pretty* [{:keys [optional-hostname
                        http-port
                        sqlite-file
+                       sqlite-kv-file
                        optional-supported-kinds-range-set
                        optional-max-content-length
                        optional-max-created-at-delta
@@ -30,6 +32,7 @@
     [(format "hostname: %s" (or optional-hostname "none specified"))
      (format "port: %d" http-port)
      (format "database file: %s" sqlite-file)
+     (format "database file (k/v store): %s" sqlite-kv-file)
      (format "max-content-length: %s" (or optional-max-content-length "<unlimited>"))
      (format "max-created-at-delta: %s" (or optional-max-created-at-delta "<unlimited>"))
      (format "websockets-max-outgoing-frames: %s" (or websockets-max-outgoing-frames "<unlimited>"))
@@ -77,6 +80,7 @@
       (get-in from-yaml [:hostname])
       (long (get-in from-yaml [:http :port]))
       (get-in from-yaml [:sqlite :file])
+      (get-in from-yaml [:sqlite :file-kv])
       (parse-supported-kinds* from-yaml)
       (some-> (get from-yaml :max-content-length) long)
       (some-> (get from-yaml :max-created-at-delta) long)

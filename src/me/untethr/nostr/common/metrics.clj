@@ -32,6 +32,7 @@
    ^Meter rejected-event
    ^Meter invalid-event
    ^Meter duplicate-event
+   ^Meter stored-event
    ^Timer subscribe-timer
    ^Timer unsubscribe-timer
    ^Timer unsubscribe-all-timer
@@ -82,6 +83,7 @@
        (meter codahale ["app" "event" "rejected"])
        (meter codahale ["app" "event" "invalid"])
        (meter codahale ["app" "event" "duplicate"])
+       (meter codahale ["app" "event" "stored"])
        (timer codahale ["app" "event" "subscribe"])
        (timer codahale ["app" "event" "unsubscribe"])
        (timer codahale ["app" "event" "unsubscribe-all"])
@@ -106,6 +108,10 @@
 (defn duplicate-event!
   [metrics]
   (mark! (:duplicate-event metrics)))
+
+(defn stored-event!
+  [metrics]
+  (mark! (:stored-event metrics)))
 
 (defn invalid-event!
   [metrics]

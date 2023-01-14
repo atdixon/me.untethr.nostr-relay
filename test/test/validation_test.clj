@@ -1,7 +1,7 @@
 (ns test.validation-test
   (:require
     [clojure.test :refer :all]
-    [me.untethr.nostr.validation :as validation]
+    [me.untethr.nostr.common.validation :as validation]
     [test.support :as support]))
 
 (deftest conform-filter-lenient-test
