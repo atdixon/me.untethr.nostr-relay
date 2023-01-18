@@ -66,8 +66,8 @@
 (def ^:private join-x-new ["x_tags x" "x.source_event_id = v.event_id"])
 
 (defn ->non-e-or-p-generic-tags
-  [filter]
-  (select-keys filter common/allow-filter-tag-queries-sans-e-and-p-set))
+  [the-filter]
+  (select-keys the-filter common/allow-filter-tag-queries-sans-e-and-p-set))
 
 (defn generic-filter->query-new
   [cols-str {:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter}

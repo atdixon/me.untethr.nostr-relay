@@ -11,6 +11,7 @@
    ^String sqlite-file
    ^String sqlite-kv-file
    ^RangeSet optional-supported-kinds-range-set
+   ^RangeSet optional-unserved-kinds-range-set
    ^Long optional-max-content-length
    ^Long optional-max-created-at-delta
    ^Long websockets-max-outgoing-frames
@@ -40,12 +41,10 @@
      (format "websockets-enable-batch-mode: %s" (or websockets-enable-batch-mode? false))
      (format "supported nip-1 kinds: %s" (or (some-> optional-supported-kinds-range-set str) "all of them"))]))
 
-(defn parse-supported-kinds*
-  "Answers nil if there is no explicit :supported-kinds key in the provided
-   conf. Downstream nil will be intepreted such that all kinds are stored."
-  ^RangeSet [from-yaml]
-  (some->> from-yaml
-    :supported-kinds
+(defn- parse-kinds-ranges-vec
+  [kinds-ranges-vec]
+  (->>
+    kinds-ranges-vec
     (map
       (fn [part]
         (if-let [[_ a b] (re-matches #"^(\d+)-(\d+)$" part)]
@@ -58,13 +57,43 @@
       (ImmutableRangeSet/builder))
     .build))
 
+(defn parse-supported-kinds*
+  "Answers nil if there is no explicit :supported-kinds key in the provided
+   conf. Downstream nil will be intepreted such that all kinds are stored."
+  ^RangeSet [from-yaml]
+  {:post [(or (nil? %) (instance? ImmutableRangeSet %))]}
+  (some->> from-yaml
+    :supported-kinds
+    parse-kinds-ranges-vec))
+
+(defn parse-unserved-kinds*
+  "Answers nil if there is no explicit :unserved-kinds key in the provided
+   conf. Downstream nil will be intepreted such that no kinds are unserved."
+  ^RangeSet [from-yaml]
+  {:post [(or (nil? %) (instance? ImmutableRangeSet %))]}
+  (some->> from-yaml
+    :unserved-kinds
+    parse-kinds-ranges-vec))
+
 (defn supports-kind?
+  ;; i.e, do we *store* this kind of event
   [^Conf conf kind]
   (and
     (number? kind)
     (if-let [^RangeSet supported-kinds-set (:optional-supported-kinds-range-set conf)]
       (.contains supported-kinds-set (long kind))
       ;; when range set is nil, we will support every kind
+      true)))
+
+(defn serves-kind?
+  [^Conf conf kind]
+  (and
+    (number? kind)
+    (if-let [^RangeSet unserved-kinds-set (:optional-unserved-kinds-range-set conf)]
+      ;; crucially we negate containment - ie serve only if kind is not in explicit
+      ;; blacklist:
+      (not (.contains unserved-kinds-set (long kind)))
+      ;; when range set is nil, we will serve every kind!
       true)))
 
 (defn ^Conf parse-conf
@@ -82,6 +111,7 @@
       (get-in from-yaml [:sqlite :file])
       (get-in from-yaml [:sqlite :file-kv])
       (parse-supported-kinds* from-yaml)
+      (parse-unserved-kinds* from-yaml)
       (some-> (get from-yaml :max-content-length) long)
       (some-> (get from-yaml :max-created-at-delta) long)
       (get-in from-yaml [:websockets :max-outgoing-frames])

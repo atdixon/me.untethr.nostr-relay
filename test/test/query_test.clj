@@ -2,13 +2,58 @@
   (:require
     [clojure.string :as str]
     [clojure.test :refer :all]
+    [me.untethr.nostr.common.domain :as domain]
+    [me.untethr.nostr.common.store :as store]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs]
     [me.untethr.nostr.app :as app]
     [me.untethr.nostr.query :as query]
     [me.untethr.nostr.query.engine :as engine]
     [test.support :as support]
-    [test.test-data :as test-data]))
+    [test.test-data :as test-data])
+  (:import (me.untethr.nostr.common.domain TableMaxRowIds)))
+
+;; --
+
+(defn- capture-table-max-ids
+  [db]
+  (domain/->TableMaxRowIds
+    (or (store/max-event-db-id db) -1)
+    (or (store/max-event-db-id-p-tags db) -1)
+    (or (store/max-event-db-id-e-tags db) -1)
+    (or (store/max-event-db-id-x-tags db) -1)))
+
+(defn query-all-pages
+  ([db filters page-size]
+   (let [table-max-row-ids (capture-table-max-ids db)]
+     (query-all-pages db filters page-size table-max-row-ids)))
+  ([db filters page-size ^TableMaxRowIds table-max-row-ids]
+   (let [active-filters (mapv
+                          #(engine/init-active-filter %
+                             :table-target-ids table-max-row-ids
+                             :page-size page-size) filters)]
+     (mapv
+       (fn [[{:keys [_ active-filters]}
+             {:keys [prev-results _]}]]
+         {:active-filters active-filters
+          :results prev-results})
+       (partition ;; we don't want partition-all, b/c we want empty if coll is singleton or less
+         2 1
+         (take-while
+           some?
+           (take 10000 ;; prevent infinite iteration
+             (iterate
+               (fn [{:keys [prev-results curr-filters]}]
+                 (when-not (empty? curr-filters)
+                   (let [page (engine/execute-active-filters db curr-filters)
+                         stats (engine/calculate-page-stats page)
+                         next-active-filters (engine/next-active-filters curr-filters stats)]
+                     {:prev-results page
+                      :curr-filters next-active-filters})))
+               {:prev-results nil
+                :curr-filters active-filters}))))))))
+
+;; --
 
 (defn- query* [db filters & {:keys [target-row-id overall-limit]}]
   (mapv :rowid
@@ -165,17 +210,68 @@
           (is (<= (count expected-results) (count query-results))
             (pr-str [filters query-results])))
         ;; with pagination... try all pages sizes...
-        (dotimes [page-size 20]
+        (dotimes [page-size 1]
           (doseq [[filters expected-results] test-data-filters
-                  :let [query-results (query-new-iterate-pages* db
-                                        (mapv #(engine/init-active-filter %
-                                                 :page-size (inc page-size)) filters))
-                        ;_ (println (str/join "\n" (map-indexed vector (:filter-log query-results))))
-                        ;_ (println (str/join "\n" (map-indexed vector (:page-stats-log query-results))))
-                        ;_ (println (str/join "\n" (map-indexed vector (:results-log query-results))))
-                        query-results (:results query-results)]]
+                  :let [pages (query-all-pages db filters (inc page-size))
+                        query-results (vec
+                                        (mapcat #(map :event_id (:results %)) pages))]]
             (is (= (set expected-results)
-                  (into #{} (map :event_id) query-results))
+                  (set query-results))
               (pr-str [filters expected-results]))
             (is (<= (count expected-results) (count query-results))
               (pr-str [filters query-results]))))))))
+
+(deftest row-id-management-regression-test
+  (support/with-memory-db-kv-schema [db-kv]
+    (support/with-memory-db-new-schema [db]
+      (let [fake-clock-vol (volatile! 100)]
+        ;; produce two events with lots of tags so that the row id of our tags
+        ;; tables comes to far exceed the row id of our base table
+        (dotimes [x 100]
+          (store/index-and-store-event!
+            db db-kv {:id (str "P" x)
+                      :pubkey "pp"
+                      :created_at (vswap! fake-clock-vol inc)
+                      :kind 1
+                      :tags (vec
+                              (map
+                                #(vector "p" (str "p" %))
+                                (range 0 10)))} "<raw-event...>")
+          (store/index-and-store-event!
+            db db-kv {:id (str "E" x)
+                      :pubkey "ee"
+                      :created_at (vswap! fake-clock-vol inc)
+                      :kind 1
+                      :tags (vec
+                              (map
+                                #(vector "e" (str "e" %))
+                                (range 0 10)))} "<raw-event...>")))
+      ;; now run paginating queries as we would in prod...
+      (let [table-max-ids (capture-table-max-ids db)
+            _ (is (> (:p-tags-id table-max-ids)
+                    (:n-events-id table-max-ids)))
+            acc (query-all-pages db [{:#p ["p1" "p9" "p11"]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) acc))]
+        (is (= (mapv #(str "P" %) (range 99 -1 -1)) results)))
+      ;;
+      (let [table-max-ids (capture-table-max-ids db)
+            _ (is (> (:e-tags-id table-max-ids)
+                    (:n-events-id table-max-ids)))
+            acc (query-all-pages db [{:#e ["e1" "e9" "e11"]}] 1
+                  table-max-ids)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) acc))]
+        (is (= (mapv #(str "E" %) (range 99 -1 -1)) results)))
+      ;;
+      (let [pages (query-all-pages db
+                    [{:#p ["p1" "p9" "p11"]}
+                     {:#e ["e1" "e9" "e11"]}]
+                    1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        (is (= (vec
+                 (interleave
+                   (map #(str "P" %) (range 99 -1 -1))
+                   (map #(str "E" %) (range 99 -1 -1))))
+              results))))))

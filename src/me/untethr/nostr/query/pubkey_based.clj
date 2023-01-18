@@ -33,7 +33,6 @@
   (format
     (str
       "select %s from n_events"
-      " indexed by idx_event_kind_created_at"
       " where pubkey in %s and kind in %s and deleted_ = 0"
       (when since
         " and created_at >= ?")

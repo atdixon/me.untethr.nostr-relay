@@ -71,6 +71,16 @@
       "/" [:b (long (/ (.getMedian snap) divisor))] "/"
       (long (/ (.get999thPercentile snap) divisor))])))
 
+(defn- meter-summary-as-markup
+  ([metrics k]
+   (meter-summary-as-markup (k metrics)))
+  ([^Meter obj]
+   (let [oneMinRate (.getOneMinuteRate obj)
+         fiveMinRate (.getFiveMinuteRate obj)
+         fifteenMinRate (.getFifteenMinuteRate obj)]
+     [:span [:b (format "%.2f" oneMinRate)] "/"
+      (format "%.2f/%.2f /s 1m/5m/15m" fiveMinRate fifteenMinRate)])))
+
 (defn- jvm-memory-summary-as-markup
   [^MemoryUsageGaugeSet x]
   (let [m (.getMetrics x)
@@ -118,21 +128,44 @@
        " (" (count-of metrics :fulfillment-timer) " pages completed)."]
       [:div [:b (count-of metrics :fulfillment-interrupt)] " cancellations."]
       [:div [:b (count-of metrics :fulfillment-error)] " errors."]
+      [:h3 "DB"]
+      [:div "Checkpoint Rate (full): " (meter-summary-as-markup metrics :db-checkpoint-full)]
+      [:div "Checkpoint Rate (partial): " (meter-summary-as-markup metrics :db-checkpoint-partial)]
+      [:div "Checkpoint Pages: " (histo-summary-as-markup metrics :db-checkpoint-pages)]
+      [:div "Checkpoint Latency: " (histo-summary-as-markup metrics :db-checkpoint-timer) " ms"]
+      [:div "Checkpoint Rate (kv; full): " (meter-summary-as-markup metrics :db-kv-checkpoint-full)]
+      [:div "Checkpoint Rate (kv; partial): " (meter-summary-as-markup metrics :db-kv-checkpoint-partial)]
+      [:div "Checkpoint Pages (kv): " (histo-summary-as-markup metrics :db-kv-checkpoint-pages)]
+      [:div "Checkpoint Latency (kv): " (histo-summary-as-markup metrics :db-kv-checkpoint-timer) " ms"]
+      [:br]
+      [:div "Write Thread Backlog: " (value-of metrics :write-thread-backlog)]
       [:h3 "Events"]
+      ;; latencies
       [:div "Verify: " (histo-summary-as-markup metrics :verify-timer) " ms"]
       [:div "Notify: " (histo-summary-as-markup metrics :notify-event-timer) " ms"
        " (" (histo-summary-as-markup metrics :notify-num-candidates) " filter candidates)"]
       [:div "Store: " (histo-summary-as-markup metrics :store-event-timer) " ms"]
+      [:div "Continuation: " (histo-summary-as-markup metrics :exec-continuation-timer) " ms"]
+      [:div "Purged: " (histo-summary-as-markup metrics :db-purge-deleted-timer) " ms"]
       [:br]
-      [:div "Stored (or replaced): " (count-of metrics :stored-event)]
-      [:div "Duplicate: " (count-of metrics :duplicate-event)]
-      [:div "Rejected: " (count-of metrics :rejected-event)]
+      ;; total counts and window throughputs
+      [:div "Stored (or replaced): " (count-of metrics :stored-event)
+       " (rate = " (meter-summary-as-markup metrics :stored-event) ")"]
+      [:div "Continuation: " (count-of metrics :exec-continuation-timer)]
+      [:div "Purged: " (count-of metrics :db-purge-deleted-timer) " (" (histo-summary-as-markup metrics :db-sweep-limit) " at a time)"]
+      [:div "Duplicate: " (count-of metrics :duplicate-event)
+       " (rate = " (meter-summary-as-markup metrics :duplicate-event) ")"]
+      [:div "Rejected: " (count-of metrics :rejected-event)
+       " (rate = " (meter-summary-as-markup metrics :rejected-event) ")"]
       [:div "Invalid: " (count-of metrics :invalid-event)]
       [:div "Problem: " (count-of metrics :problem-message)]
       [:h3 "Other"]
       [:div "JVM Heap Usage: " (jvm-memory-summary-as-markup (:jvm-memory-usage metrics))]
       [:br]
       [:div "Quick row count: " (value-of metrics :quick-row-count)]
+      [:div "Quick row count (p-tags): " (value-of metrics :quick-row-count-p-tags)]
+      [:div "Quick row count (e-tags): " (value-of metrics :quick-row-count-e-tags)]
+      [:div "Quick row count (x-tags): " (value-of metrics :quick-row-count-x-tags)]
       [:br]
       [:div "Channel insert: " (histo-summary-as-markup metrics :insert-channel-timer) " ms"]
       ]]))

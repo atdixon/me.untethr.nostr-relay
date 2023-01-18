@@ -81,43 +81,43 @@
         prepared-filters (prepare-req-filters-fn conf use-filters)
         ;; we'll just do a first page query so results will be capped to default page-size
         active-filters (mapv #(engine/init-active-filter % :page-size 50) prepared-filters)
-        as-query (engine/active-filters->query active-filters)]
-    (let [query-start-nanos (System/nanoTime)
-          event-ids (mapv :event_id
-                      (jdbc/execute! readonly-db as-query
-                        {:builder-fn rs/as-unqualified-lower-maps}))
-          rows (jdbc/execute! readonly-db-kv
-                 (apply vector
-                   (format "select * from n_kv_events where event_id in (%s)"
-                     (str/join "," (repeat (count event-ids) "?")))
-                   event-ids)
-                 {:builder-fn rs/as-unqualified-lower-maps})
-          query-duration-millis (util/nanos-to-millis (- (System/nanoTime) query-start-nanos))
-          rows' (mapv
-                  (fn [row]
-                    (let [parsed-event (-> row :raw_event json-facade/parse)]
-                      (-> row
-                        (dissoc :raw_event)
-                        (merge
-                          (select-keys parsed-event [:kind :pubkey]))
-                        (assoc :content
-                               (let [max-summary-len 75
-                                     the-content (:content parsed-event)
-                                     the-content-len (count the-content)
-                                     needs-summary? (> the-content-len max-summary-len)
-                                     the-summary (if needs-summary?
-                                                   (subs the-content 0 max-summary-len) the-content)
-                                     suffix (if needs-summary? "..." "")]
-                                 (str the-summary suffix)))))) rows)
-          json-of-used-filters (json-facade/write-str* use-filters)
-          results-str (if (empty? rows')
-                        "No results."
-                        (with-out-str
-                          (pprint/print-table
-                            [:rowid :kind :pubkey :content] rows')))
-          overall-duration-millis (util/nanos-to-millis (- (System/nanoTime) overall-start-nanos))]
-      (format "filters: %s elapsed: %d/%dms (query/overall)%n%s"
-        json-of-used-filters
-        query-duration-millis
-        overall-duration-millis
-        results-str))))
+        as-query (engine/active-filters->query active-filters)
+        query-start-nanos (System/nanoTime)
+        event-ids (mapv :event_id
+                    (jdbc/execute! readonly-db as-query
+                      {:builder-fn rs/as-unqualified-lower-maps}))
+        rows (jdbc/execute! readonly-db-kv
+               (apply vector
+                 (format "select * from n_kv_events where event_id in (%s)"
+                   (str/join "," (repeat (count event-ids) "?")))
+                 event-ids)
+               {:builder-fn rs/as-unqualified-lower-maps})
+        query-duration-millis (util/nanos-to-millis (- (System/nanoTime) query-start-nanos))
+        rows' (mapv
+                (fn [row]
+                  (let [parsed-event (-> row :raw_event json-facade/parse)]
+                    (-> row
+                      (dissoc :raw_event)
+                      (merge
+                        (select-keys parsed-event [:kind :pubkey]))
+                      (assoc :content
+                             (let [max-summary-len 75
+                                   the-content (:content parsed-event)
+                                   the-content-len (count the-content)
+                                   needs-summary? (> the-content-len max-summary-len)
+                                   the-summary (if needs-summary?
+                                                 (subs the-content 0 max-summary-len) the-content)
+                                   suffix (if needs-summary? "..." "")]
+                               (str the-summary suffix)))))) rows)
+        json-of-used-filters (json-facade/write-str* use-filters)
+        results-str (if (empty? rows')
+                      "No results."
+                      (with-out-str
+                        (pprint/print-table
+                          [:rowid :kind :pubkey :content] rows')))
+        overall-duration-millis (util/nanos-to-millis (- (System/nanoTime) overall-start-nanos))]
+    (format "filters: %s elapsed: %d/%dms (query/overall)%n%s"
+      json-of-used-filters
+      query-duration-millis
+      overall-duration-millis
+      results-str)))

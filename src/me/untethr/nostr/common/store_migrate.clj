@@ -36,11 +36,21 @@
                        :restored-val restored-val#}))))))))
 
 (comment
-  (let [old-db (store/get-simplest-datasource "./dump/n-prod.db?open_mode=1")
-        new-db (doto (store/get-simplest-datasource "nn.db")
-                 (store/apply-schema! "schema-new.sql"))
-        new-db-kv (doto (store/get-simplest-datasource "nn-kv.db")
-                    (store/apply-schema! "schema-kv.sql"))]
+  (let [parsed-schema-old (store/parse-schema "schema-deprecated.sql")
+        old-db (store/get-simplest-datasource
+                 (str "./dump/n-prod.db?open_mode=1&"
+                   (store/pragma-statements->query-string
+                     (:pragma-statements parsed-schema-old))))
+        parsed-schema (store/parse-schema "schema-new.sql")
+        new-db (doto (store/get-simplest-datasource "nn.db"
+                       (:pragma-statements parsed-schema))
+                 (store/apply-pragma-statements! parsed-schema)
+                 (store/apply-ddl-statements! parsed-schema))
+        parsed-schema-kv (store/parse-schema "schema-kv.sql")
+        new-db-kv (doto (store/get-simplest-datasource "nn-kv.db"
+                          (:pragma-statements parsed-schema-kv))
+                    (store/apply-pragma-statements! parsed-schema-kv)
+                    (store/apply-ddl-statements! parsed-schema-kv))]
     (migrate! old-db new-db new-db-kv)))
 
 (defn- etl
@@ -71,6 +81,7 @@
 (defn migrate!
   [old-db new-db new-db-kv]
   ;; if we're using hikari we'll have to ignore connection leaks btw
+  ;; consider: insert without index and then add indices post facto
   (with-open [old-cxn (jdbc/get-connection old-db)
               new-cxn (jdbc/get-connection new-db)
               new-cxn-kv (jdbc/get-connection new-db-kv)]
@@ -133,16 +144,22 @@
 
 (comment
   (let [file-to-load "./dump/nostr-wellorder-early-1m-v1.jsonl.bz2"
-        new-db (doto (store/get-simplest-datasource "./dump/n-load.db")
-                 (store/apply-schema! "schema-new.sql"))
-        new-db-kv (doto (store/get-simplest-datasource "nn-kv.db")
-                    (store/apply-schema! "schema-kv.sql"))]
+        parsed-schema (store/parse-schema "schema-new.sql")
+        new-db (doto (store/get-simplest-datasource "./dump/n-load.db"
+                       (:pragma-statements parsed-schema))
+                 (store/apply-pragma-statements! parsed-schema)
+                 (store/apply-ddl-statements! parsed-schema))
+        parsed-schema-kv (store/parse-schema "schema-kv.sql")
+        new-db-kv (doto (store/get-simplest-datasource "nn-kv.db"
+                          (:pragma-statements parsed-schema-kv))
+                    (store/apply-pragma-statements! parsed-schema-kv)
+                    (store/apply-ddl-statements! parsed-schema-kv))]
     (load-data! file-to-load new-db new-db-kv)))
 
 (defn load-data!
   [compressed-jsonl-file new-db new-db-kv]
   ;; NOTE !!! we are not verifying the sigs of incoming data here !!!
-  ;;   ...but we *are* validating...
+  ;;   ...but we *are* validating the form...
   (let [factory (CompressorStreamFactory.)] ;; will auto-detect compression type.
     (with-open [buffered-in (io/input-stream compressed-jsonl-file)
                 compressor-in (.createCompressorInputStream factory buffered-in)
@@ -155,6 +172,7 @@
           (println 'batch batch-idx)
           ;; ultimately if this batching strategy is not efficient enough for larger
           ;; datasets we'll want to move toward prepared statements.
+          ;; also consider: insert without index and then add indices post facto
           (jdbc/with-transaction [tx new-db]
             (doseq [raw-json-obj batch
                     :let [parsed-obj (json-facade/parse raw-json-obj)

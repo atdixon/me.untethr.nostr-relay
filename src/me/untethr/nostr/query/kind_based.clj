@@ -30,29 +30,29 @@
 ;;  so assuming that sqlite is able to walk the created_at indices cleverly backwards
 ;;  to avoid sorting the entirety of results before applying the limit. Should we see
 ;;  degraded perf over larger data volumes, we can try out union queries such as this one.
-(defn kinds-only-union-query
-  [cols-str kinds ?endcap-created-at endcap-row-id local-limit & {:keys [since until]}]
-  ;; we read the explain query plan for this union showing sqlite leveraging
-  ;; index for each subquery using a *single* temp b-tree to order results from
-  ;; each union (see below for plan when two kinds are unioned).
-  ;; we use union all as we do not expect overlap between results of each query.
-  (let [union-query-str (str
-                          "select * from ("
-                          (str/join ") union all select * from ("
-                            (repeat (count kinds)
-                              (kinds-only-single-query-str cols-str 1 ?endcap-created-at
-                                :since since :until until)))
-                          ") order by created_at desc, id desc limit ?")
-        sorted-kinds (sort kinds)]
-    (if ?endcap-created-at
-      (vec (concat
-             [union-query-str]
-             (map #(vector % ?endcap-created-at endcap-row-id local-limit) sorted-kinds)
-             [local-limit]))
-      (vec (concat
-             [union-query-str]
-             (mapcat #(vector % endcap-row-id local-limit) sorted-kinds)
-             [local-limit])))))
+;(defn kinds-only-union-query
+;  [cols-str kinds ?endcap-created-at endcap-row-id local-limit & {:keys [since until]}]
+;  ;; we read the explain query plan for this union showing sqlite leveraging
+;  ;; index for each subquery using a *single* temp b-tree to order results from
+;  ;; each union (see below for plan when two kinds are unioned).
+;  ;; we use union all as we do not expect overlap between results of each query.
+;  (let [union-query-str (str
+;                          "select * from ("
+;                          (str/join ") union all select * from ("
+;                            (repeat (count kinds)
+;                              (kinds-only-single-query-str cols-str 1 ?endcap-created-at
+;                                :since since :until until)))
+;                          ") order by created_at desc, id desc limit ?")
+;        sorted-kinds (sort kinds)]
+;    (if ?endcap-created-at
+;      (vec (concat
+;             [union-query-str]
+;             (map #(vector % ?endcap-created-at endcap-row-id local-limit) sorted-kinds)
+;             [local-limit]))
+;      (vec (concat
+;             [union-query-str]
+;             (mapcat #(vector % endcap-row-id local-limit) sorted-kinds)
+;             [local-limit])))))
 
 ;MERGE (UNION)
 ;LEFT

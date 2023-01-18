@@ -1,5 +1,6 @@
 (ns test.fulfill-test
   (:require [clojure.test :refer :all]
+            [me.untethr.nostr.common.domain :as domain]
             [me.untethr.nostr.fulfill :as fulfill]
             [me.untethr.nostr.app :as app]
             [test.support :as support]
@@ -15,7 +16,8 @@
             eose-atom (atom 0)
             fulfill-atom (atom (fulfill/create-empty-registry))
             ^Future f (fulfill/submit! (metrics/create-metrics)
-                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
+                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
+                        (domain/->TableMaxRowIds 5 -1 -1 -1)
                         (fn [res]
                           (swap! results-atom conj res))
                         #(swap! eose-atom inc))
@@ -42,7 +44,8 @@
               eose-atom (atom 0)
               fulfill-atom (atom (fulfill/create-empty-registry))
               ^Future f (fulfill/submit-use-batching! (metrics/create-metrics)
-                          db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
+                          db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
+                          (domain/->TableMaxRowIds 5 -1 -1 -1)
                           (fn [res]
                             (swap! results-atom conj res))
                           #(swap! eose-atom inc))
@@ -70,7 +73,8 @@
             eose-atom (atom 0)
             fulfill-atom (atom (fulfill/create-empty-registry))
             ^Future f (fulfill/submit! (metrics/create-metrics)
-                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
+                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
+                        (domain/->TableMaxRowIds 5 -1 -1 -1)
                         (fn [res]
                           ;; block so our cancellation is guaranteed to cancel
                           ;; us in media res
@@ -107,7 +111,8 @@
             eose-atom (atom 0)
             fulfill-atom (atom (fulfill/create-empty-registry))
             ^Future f (fulfill/submit-use-batching! (metrics/create-metrics)
-                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}] 5
+                        db db-kv fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
+                        (domain/->TableMaxRowIds 5 -1 -1 -1)
                         (fn [res]
                           ;; block so our cancellation is guaranteed to cancel
                           ;; us in media res

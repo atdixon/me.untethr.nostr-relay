@@ -17,6 +17,7 @@ A [nostr](https://github.com/fiatjaf/nostr/) relay, written in Clojure, backed b
 [NIP-26](https://github.com/nostr-protocol/nips/blob/master/26.md),
 [NIP-33](https://github.com/nostr-protocol/nips/blob/master/33.md),
 [NIP-40](https://github.com/nostr-protocol/nips/blob/master/40.md)
+[NIP-42](https://github.com/nostr-protocol/nips/blob/master/42.md)
 
 ### Project Goals
 

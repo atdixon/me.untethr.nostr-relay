@@ -3,12 +3,51 @@
     [clojure.string :as str]
     [clojure.test :refer :all]
     [me.untethr.nostr.common.json-facade :as json-facade]
+    [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.query :as query]
     [me.untethr.nostr.query.engine :as engine]
+    [me.untethr.nostr.write-thread :as write-thread]
     [test.support :as support]
     [me.untethr.nostr.common.store :as store]
     [next.jdbc :as jdbc]
-    [next.jdbc.result-set :as rs]))
+    [next.jdbc.result-set :as rs])
+  (:import (java.util.concurrent CountDownLatch TimeUnit)))
+
+(deftest pragma-test
+  (support/with-memory-db-new-schema [db]
+    (is (= {:journal_size_limit 16777216
+            :cache_size -2000 ;; -1600
+            :page_size 4096 ;; 16384
+            :auto_vacuum 2
+            :wal_autocheckpoint 0
+            :synchronous 0
+            :foreign_keys 0}
+          (select-keys
+            (store/collect-pragmas! db)
+            [:journal_size_limit
+             :cache_size
+             :page_size
+             :auto_vacuum
+             :wal_autocheckpoint
+             :synchronous
+             :foreign_keys]))))
+  (support/with-memory-db-kv-schema [db-kv]
+    (is (= {:journal_size_limit 16777216
+            :cache_size -16000
+            :page_size 16384
+            :auto_vacuum 2
+            :wal_autocheckpoint 0
+            :synchronous 0
+            :foreign_keys 0}
+          (select-keys
+            (store/collect-pragmas! db-kv)
+            [:journal_size_limit
+             :cache_size
+             :page_size
+             :auto_vacuum
+             :wal_autocheckpoint
+             :synchronous
+             :foreign_keys])))))
 
 (deftest idempotent-insert-test
   (support/with-memory-db [db]
@@ -125,3 +164,18 @@
                               (str/join "," (repeat (count ids) "?")))
                             ids)))]
           (is (= [raw-e] fetched)))))))
+
+(deftest many-followers-regression-test
+  (support/with-regression-data [data-vec]
+    (support/with-memory-db-new-schema [db]
+      (support/with-memory-db-kv-schema [db-kv]
+        (let [fake-metrics (metrics/create-metrics)
+              [_ event-obj] (json-facade/parse (nth data-vec 4))
+              latch (CountDownLatch. 1)
+              _ (write-thread/submit-new-event!
+                  fake-metrics db db-kv "chan0" event-obj "<raw...>"
+                  (fn [])
+                  (fn [])
+                  (fn [] (.countDown latch)))]
+          (is (time
+                (.await latch 20000 TimeUnit/MILLISECONDS))))))))

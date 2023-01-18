@@ -17,7 +17,7 @@
             <!-- ...and this is the file we rollover to: -->
             <fileNamePattern>logs/nostr-relay-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
-            <totalSizeCap>5GB</totalSizeCap>
+            <totalSizeCap>3GB</totalSizeCap>
         </rollingPolicy>
         <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
             <maxFileSize>50MB</maxFileSize>
@@ -38,7 +38,28 @@
             <!-- ...and this is the file we rollover to: -->
             <fileNamePattern>logs/p6spy-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
-            <totalSizeCap>5GB</totalSizeCap>
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>50MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE_REJECTED"
+              class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!--
+        see https://p6spy.readthedocs.io/en/latest/configandusage.html
+        this is the active file that we log to...
+        -->
+        <file>logs/app-rejected.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- ...and this is the file we rollover to: -->
+            <fileNamePattern>logs/app-rejected-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
+            <totalSizeCap>3GB</totalSizeCap>
         </rollingPolicy>
         <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
             <maxFileSize>50MB</maxFileSize>
@@ -61,8 +82,12 @@
     </logger>
     -->
 
-    <logger name="p6spy" additivity="false">
+    <logger name="p6spy" additivity="false" level="INFO">
         <appender-ref ref="FILE_P6SPY" />
+    </logger>
+
+    <logger name="app.rejected" additivity="false" level="OFF">
+        <appender-ref ref="FILE_REJECTED" />
     </logger>
 
 </configuration>

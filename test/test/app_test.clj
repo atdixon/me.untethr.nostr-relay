@@ -1,11 +1,9 @@
 (ns test.app-test
   (:require
-    [clojure.string :as str]
     [clojure.test :refer :all]
     [me.untethr.nostr.app :as app]
     [me.untethr.nostr.conf :as conf]
     [me.untethr.nostr.common.metrics :as metrics]
-    [me.untethr.nostr.query :as query]
     [me.untethr.nostr.query.engine :as engine]
     [me.untethr.nostr.subscribe :as subscribe]
     [me.untethr.nostr.write-thread :as write-thread]
@@ -16,11 +14,16 @@
 (defn make-test-conf
   ([]
    (make-test-conf nil nil))
-  ([supported-kinds-vec max-content-length]
-   (make-test-conf supported-kinds-vec max-content-length nil))
-  ([supported-kinds-vec max-content-length max-created-at-delta]
-   (conf/->Conf nil 1234 "nx.db"
+  ([supported-kinds-vec]
+   (make-test-conf supported-kinds-vec nil))
+  ([supported-kinds-vec unserved-kinds-vec]
+   (make-test-conf supported-kinds-vec unserved-kinds-vec nil))
+  ([supported-kinds-vec unserved-kinds-vec max-content-length]
+   (make-test-conf supported-kinds-vec unserved-kinds-vec max-content-length nil))
+  ([supported-kinds-vec unserved-kinds-vec max-content-length max-created-at-delta]
+   (conf/->Conf nil 1234 "nx.db" "nx-kb.db"
      (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
+     (some->> unserved-kinds-vec (hash-map :unserved-kinds) conf/parse-unserved-kinds*)
      max-content-length max-created-at-delta nil nil nil)))
 
 (deftest fulfill-synchronously?-test
@@ -55,7 +58,7 @@
           (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
                                             {:authors [support/fake-hex-64-str]
                                              :kinds [1 2 3]}]))))
-  (let [conf (make-test-conf ["1-2"] nil)]
+  (let [conf (make-test-conf ["1-2"])]
     (is (= [] (#'app/prepare-req-filters conf [])))
     (is (= [] (#'app/prepare-req-filters conf [{:authors []}])))
     (is (= [{}] (#'app/prepare-req-filters conf [{}])))
@@ -74,7 +77,24 @@
     (is (= [{} {:authors [support/fake-hex-64-str]}]
           (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
                                             {:authors [support/fake-hex-64-str]
-                                             :kinds [3 4]}])))))
+                                             :kinds [3 4]}]))))
+  ;; let's get unserved-kinds involved...
+  (let [conf (make-test-conf ["1-2"] ["3"])]
+    (is (= [{} {:authors [support/fake-hex-64-str]} {:authors [support/fake-hex-64-str] :kinds [1 2]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                           {:authors [support/fake-hex-64-str]
+                                            :kinds [1 2 3]}])))
+    (is (= [{} {:authors [support/fake-hex-64-str]}]
+          (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                           {:authors [support/fake-hex-64-str]
+                                            ;; this filter gets erased b/c it only mentions unserved
+                                            :kinds [3]}])))
+    (is (= []
+          (#'app/prepare-req-filters conf [{:authors [support/fake-hex-64-str]
+                                            ;; this filter gets erased b/c it only mentions unserved
+                                            ;; ...and since we're the only filter the entire list
+                                            ;; of filters becomes empty...
+                                            :kinds [3]}])))))
 
 (deftest rejected-event-test
   ;; This test is a sort of \"integration\" test for the `app/receive-event`
@@ -101,19 +121,19 @@
       ;; or invalid or when :content is invalid type, we only reject if :kind is
       ;; valid but we are configured not to support it, or if :content is valid
       ;; but too long
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {})))
-      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] 3) {:content "0123"})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] 3) {:content "012"})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:content "012"})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 1})))
-      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil) {:kind 3})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"]) {})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil 3) {:content "0123"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 3) {:content "012"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"]) {:content "012"})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"]) {:kind 1})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"]) {:kind 3})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
                          {:created_at (#'app/current-system-epoch-seconds)})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
                          {:created_at (#'app/current-system-epoch-seconds)})))
-      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
                          {:created_at (+ (#'app/current-system-epoch-seconds) 50)})))
-      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil 100)
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
                          {:created_at (+ (#'app/current-system-epoch-seconds) 200)}))))))
 
 (deftest receive-accepted-event-test
@@ -158,7 +178,7 @@
                                ::stub-raw-message)
                              @result-atom)]
           (with-redefs [;; for our test we need run-async to actually be a blocking sync:
-                        write-thread/run-async! (fn [db-conn db-kv-conn task-fn success-fn failure-fn]
+                        write-thread/run-async! (fn [_metrics db-conn db-kv-conn task-fn success-fn failure-fn]
                                                   (let [res (try
                                                               (task-fn db-conn db-kv-conn)
                                                               (catch Throwable t

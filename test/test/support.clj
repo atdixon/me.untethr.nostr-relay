@@ -19,24 +19,30 @@
 
 (defmacro ^:deprecated with-memory-db
   [bindings & body]
-  `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
-     (store/apply-schema! db# "schema.sql")
-     (let [~bindings [db#]]
-       ~@body)))
+  `(let [parsed-schema# (store/parse-schema "schema-deprecated.sql")
+         ds# (store/create-sqlite-datasource ":memory:" parsed-schema#)]
+     (with-open [db# (jdbc/get-connection ds#)]
+       (store/apply-ddl-statements! db# parsed-schema#)
+       (let [~bindings [db#]]
+         ~@body))))
 
 (defmacro with-memory-db-new-schema
   [bindings & body]
-  `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
-     (store/apply-schema! db# "schema-new.sql")
-     (let [~bindings [db#]]
-       ~@body)))
+  `(let [parsed-schema# (store/parse-schema "schema-new.sql")
+         ds# (store/create-sqlite-datasource ":memory:" parsed-schema#)]
+     (with-open [db# (jdbc/get-connection ds#)]
+       (store/apply-ddl-statements! db# parsed-schema#)
+       (let [~bindings [db#]]
+         ~@body))))
 
 (defmacro with-memory-db-kv-schema
   [bindings & body]
-  `(with-open [db# (jdbc/get-connection "jdbc:sqlite::memory:")]
-     (store/apply-schema! db# "schema-kv.sql")
-     (let [~bindings [db#]]
-       ~@body)))
+  `(let [parsed-schema# (store/parse-schema "schema-kv.sql")
+         ds# (store/create-sqlite-datasource ":memory:" parsed-schema#)]
+     (with-open [db# (jdbc/get-connection ds#)]
+       (store/apply-ddl-statements! db# parsed-schema#)
+       (let [~bindings [db#]]
+         ~@body))))
 
 (defn ^:deprecated load-data
   [db parsed-events]

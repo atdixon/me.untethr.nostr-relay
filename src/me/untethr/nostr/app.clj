@@ -11,6 +11,7 @@
     [me.untethr.nostr.page.metrics-porcelain :as metrics-porcelain]
     [me.untethr.nostr.page.nip11 :as page-nip11]
     [me.untethr.nostr.jetty :as jetty]
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.common.store :as store]
@@ -239,7 +240,9 @@
       (:optional-max-content-length conf))))
 
 (defn- handle-rejected-event!
-  [metrics websocket-state ch-sess event-obj rejection-message-str]
+  [metrics websocket-state ch-sess event-obj raw-message rejection-message-str]
+  (log/log log/*logger-factory* "app.rejected" :info nil
+    (str rejection-message-str " " raw-message))
   (metrics/rejected-event! metrics)
   (send!* websocket-state ch-sess
     (create-ok-message
@@ -285,25 +288,23 @@
           ;; duplicates the same for non-replaceable events (it should be noted that
           ;; this means we'll send a "duplicate:" nip-20 response whenever someone sends a
           ;; replaceable event that has already been replaced, and we'll bear that cross)
-          (write-thread/run-async!
+          (write-thread/submit-new-event!
+            metrics
             singleton-writeable-connection
             singleton-writeable-connection-kv
-            (fn [singleton-writeable-connection singleton-writeable-connection-kv]
-              (metrics/time-store-event! metrics
-                (store/index-and-store-event!
-                  singleton-writeable-connection singleton-writeable-connection-kv
-                  channel-id verified-event-or-err-map raw-event)))
-            (fn [store-result]
-              (if (identical? store-result :duplicate)
-                (handle-duplicate-event! metrics websocket-state ch-sess event-obj "duplicate")
-                (do
-                  (handle-stored-or-replaced-event! metrics websocket-state ch-sess event-obj "stored")
-                  ;; Notify subscribers only after we discover that the event is
-                  ;; not a duplicate.
-                  (metrics/time-notify-event! metrics
-                    (subscribe/notify! metrics subs-atom event-obj raw-event)))))
-            (fn [^Throwable t]
-              (log/error t "while storing event" event-obj)))))
+            channel-id
+            verified-event-or-err-map
+            raw-event
+            (fn []
+              (handle-duplicate-event! metrics websocket-state ch-sess event-obj "duplicate"))
+            (fn []
+              ;; for now this includes initial indexing - if there is any continuation to
+              ;; indexing, we'll not get subsequent callbacks atm.
+              (handle-stored-or-replaced-event! metrics websocket-state ch-sess event-obj "stored")
+              ;; Notify subscribers only after we discover that the event is
+              ;; NOT a duplicate.
+              (metrics/time-notify-event! metrics
+                (subscribe/notify! metrics subs-atom event-obj raw-event))))))
       ;; event was invalid, per nip-20, we'll send make an indication that the
       ;; event did not get persisted (see
       ;; https://github.com/nostr-protocol/nips/blob/master/20.md)
@@ -317,7 +318,7 @@
   ;; content is too long, its timestamp too far in the future, etc, then we can
   ;; reject it without trying to validate it.
   (if-let [rejection-reason (reject-event-before-verify? conf e)]
-    (handle-rejected-event! metrics websocket-state ch-sess e rejection-reason)
+    (handle-rejected-event! metrics websocket-state ch-sess e raw-message rejection-reason)
     (receive-accepted-event! ^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess e raw-message)))
 
 (def max-filters 20)
@@ -345,9 +346,28 @@
            interpret-legacy-filter))
     ;; remove null filters (ie filters that could never match anything)...
     (filter (complement validation/filter-has-empty-attr?))
+    (keep ;; ... we're mapping and filtering here...
+      (fn [one-filter]
+        ;; ...some delicate logic; we won't touch the filter if it has no
+        ;;  kinds array...
+        (if (contains? one-filter :kinds)
+          ;; ...otherwise we're going to remove all kinds that we refuse to
+          ;;  serve...
+          (let [modified-filter
+                (update one-filter :kinds
+                  (fn [kinds-vec]
+                    (remove #(not (conf/serves-kind? conf %)) kinds-vec)))]
+            ;; ...and, finally, if the remaining kinds is empty then we're
+            ;;  going to answer nil so this filter is effectively erased from
+            ;;  the filters list...
+            (when (not-empty (:kinds modified-filter))
+              modified-filter))
+          one-filter)))
     ;; if :kind is present, at least one of the provided kinds is supported
-    (filter #(or (not (contains? % :kinds))
-               (some (partial conf/supports-kind? conf) (:kinds %))))
+    (filter
+      (fn [one-filter]
+        (or (not (contains? one-filter :kinds))
+          (some #(conf/supports-kind? conf %) (:kinds one-filter)))))
     ;; remove straight-up duplicate filters...
     distinct
     vec))
@@ -441,7 +461,14 @@
                   ;; some few number of messages in which case we may double-deliver
                   ;; an event or few from both fulfillment and realtime notifications,
                   ;; but, crucially, we will never miss an event:
-                  (if-let [target-db-id (store/max-event-db-id readonly-db)]
+                  (let [table-max-ids (domain/->TableMaxRowIds
+                                        ;; consider: are these disk seeks? or generally cached?
+                                        ;;  we could consider only producing the ids needed for the
+                                        ;;  given query filter/s we have.
+                                        (or (store/max-event-db-id readonly-db) -1)
+                                        (or (store/max-event-db-id-p-tags readonly-db) -1)
+                                        (or (store/max-event-db-id-e-tags readonly-db) -1)
+                                        (or (store/max-event-db-id-x-tags readonly-db) -1))]
                     (letfn [;; this fullfillment observer function is a callback
                             ;; that will get invoked for every event in the db that
                             ;; matches the subscription.
@@ -465,13 +492,13 @@
                         ;; any other REQ or other event from the client -- and we're not going
                         ;; into fulfillment queues.
                         (fulfill/synchronous!!
-                          metrics readonly-db readonly-datasource-kv channel-id internal-req-id use-req-filters target-db-id
+                          metrics readonly-db readonly-datasource-kv channel-id
+                          internal-req-id use-req-filters table-max-ids
                           fulfillment-observer fulfillment-eose-callback)
                         (fulfill/submit-use-batching!
-                          metrics readonly-db readonly-datasource-kv fulfill-atom channel-id internal-req-id use-req-filters target-db-id
-                          fulfillment-observer fulfillment-eose-callback)))
-                    ;; should only occur on epochal first event
-                    (log/warn "no max rowid; nothing yet to fulfill")))))))))))
+                          metrics readonly-db readonly-datasource-kv fulfill-atom channel-id
+                          internal-req-id use-req-filters table-max-ids
+                          fulfillment-observer fulfillment-eose-callback)))))))))))))
 
 (defn- receive-close
   [metrics subs-atom fulfill-atom channel-id _websocket-state _ch-sess [_ req-id]]
@@ -535,6 +562,7 @@
   ;; are done on a singleton write thread - this is optimal write behavior for
   ;; sqlite3 using WAL-mode:
   (write-thread/run-async!
+    metrics
     singleton-writeable-connection
     singleton-writeable-connection-kv
     (fn [singleton-writeable-connection _singleton-writeable-connection-kv]
@@ -755,11 +783,30 @@
                     ;; just in case some queries /metrics endpoint in fast cycle
                     ;; we don't hit database each time.
                     5000)
+                  (util/memoize-with-expiration
+                    #(if @readonly-db-holder
+                       (store/max-event-db-id-p-tags @readonly-db-holder) -1)
+                    ;; just in case some queries /metrics endpoint in fast cycle
+                    ;; we don't hit database each time.
+                    5100)
+                  (util/memoize-with-expiration
+                    #(if @readonly-db-holder
+                       (store/max-event-db-id-e-tags @readonly-db-holder) -1)
+                    ;; just in case some queries /metrics endpoint in fast cycle
+                    ;; we don't hit database each time.
+                    5200)
+                  (util/memoize-with-expiration
+                    #(if @readonly-db-holder
+                       (store/max-event-db-id-x-tags @readonly-db-holder) -1)
+                    ;; just in case some queries /metrics endpoint in fast cycle
+                    ;; we don't hit database each time.
+                    5300)
                   #(ws-registry/size-estimate websocket-connections-registry)
                   #(subscribe/num-subscriptions subs-atom)
                   #(subscribe/num-filters-prefixes subs-atom)
                   #(subscribe/num-firehose-filters subs-atom)
-                  #(fulfill/num-active-fulfillments fulfill-atom))
+                  #(fulfill/num-active-fulfillments fulfill-atom)
+                  #(write-thread/run-async!-backlog-size))
         datasources (store/init-new! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
         datasources-kv (store/init-new-kv! (:sqlite-kv-file conf) ^MetricRegistry (:codahale-registry metrics))
         {:keys [^DataSource writeable-datasource ^DataSource readonly-datasource]} datasources
@@ -770,6 +817,10 @@
         singleton-writeable-connection (.getConnection writeable-datasource)
         singleton-writeable-connection-kv (.getConnection writeable-datasource-kv)
         _ (vreset! readonly-db-holder readonly-datasource)]
+    (write-thread/schedule-sweep-job!
+      metrics
+      singleton-writeable-connection
+      singleton-writeable-connection-kv)
     (jetty/start-server!
       (populate-non-ws-handler!
         non-ws-handler-container
@@ -813,10 +864,11 @@
   ;; Repl note: The arity fn here is good for repl invocation and returns jetty-server
   ;; which can be .stop/.start-ed. Also note that we have a logback-test.xml in
   ;; test/ classpath - which is nice to have picked up when on the repl classpath.
-  ([] (execute! nil))
-  ([sqlite-file-override]
+  ([] (execute! nil nil))
+  ([sqlite-file-override sqlite-kv-file-override]
    (let [conf (cond-> (parse-config)
-                (some? sqlite-file-override) (assoc :sqlite-file sqlite-file-override))
+                (some? sqlite-file-override) (assoc :sqlite-file sqlite-file-override)
+                (some? sqlite-kv-file-override) (assoc :sqlite-kv-file sqlite-kv-file-override))
          nip05-json (slurp-json* "conf/nip05.json")
          nip11-json (slurp-json* "conf/nip11.json")]
      (let [jetty-server (start-server! conf nip05-json nip11-json)]
@@ -834,6 +886,6 @@
   ;; Logging is via logback-classic; using a system property on the command-line
   ;; used to start this process, you can specify the logging configuration file
   ;; like so: "-Dlogback.configurationFile=conf/logback.xml".
-  (let [jetty-server (execute! nil)]
+  (let [jetty-server (execute! nil nil)]
     (log/info "server is started; main thread blocking forever...")
     (.join jetty-server)))

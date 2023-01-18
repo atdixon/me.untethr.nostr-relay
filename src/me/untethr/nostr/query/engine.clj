@@ -1,88 +1,125 @@
 (ns me.untethr.nostr.query.engine
   (:require
     [clojure.string :as str]
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.query :as legacy-query]
     [me.untethr.nostr.query.e-or-p-based :as e-or-p-based]
     [me.untethr.nostr.query.kind-based :as kind-based]
     [me.untethr.nostr.query.pubkey-based :as pubkey-based]
-    [me.untethr.nostr.query :as query]))
-
+    [me.untethr.nostr.query :as query]
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs])
+  (:import
+    (me.untethr.nostr.common.domain TableMaxRowIds)))
 
 (defrecord ActiveFilterState
   ;; cursor-row-id is inclusive - ie for the next query issued for this
   ;; filter state, we will want to allow the row id to be *included*
   ;; in the query results.
-  [the-filter page-size remaining-quota cursor-row-id])
+  [stereotype the-filter page-size remaining-quota cursor-row-id])
 
 (defrecord ActiveFilterPageStats
   [num-results min-seen-row-id])
 
-
-(defn filter->query
-  [{:keys [ids kinds since until authors] _limit :limit e# :#e p# :#p :as filter}
-   & {:keys [endcap-row-id ?endcap-created-at override-limit]}]
-  {:pre [(some? endcap-row-id) (some? override-limit)]}
+(defn- stereotype-filter
+  [{:keys [ids kinds authors] _limit :limit e# :#e p# :#p :as the-filter}]
+  ;; note: if we modify possible return values, we need to revisit other funcs
+  ;; in this ns.
+  {:post [(#{:kinds-only :pubkeys-only :e-tags-only :p-tags-only
+             :pubkeys-and-kinds-only :e-tags-and-kinds-only :p-tags-and-kinds-only
+             :generic-unoptimized} %)]}
   (let [num-ids (count ids)
         num-kinds (count kinds)
         num-authors (count authors)
         num-#e (count e#)
         num-#p (count p#)
-        generic-tags (query/->non-e-or-p-generic-tags filter)
+        generic-tags (query/->non-e-or-p-generic-tags the-filter)
         num-generic-tags (transduce (comp (map second) (map count)) + 0 generic-tags)]
     (cond
       ;; -- single attr only queries --
       (and (pos? num-kinds)
         (every? zero? [num-ids num-authors num-#e num-#p num-generic-tags]))
-      (kind-based/kinds-only-single-query
-        "id, event_id, created_at" kinds ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :kinds-only
       (and (pos? num-authors)
         (every? zero? [num-ids num-kinds num-#e num-#p num-generic-tags]))
-      (pubkey-based/pubkeys-only-single-query
-        "id, event_id, created_at" authors ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :pubkeys-only
       (and (pos? num-#e)
         (every? zero? [num-ids num-kinds num-authors num-#p num-generic-tags]))
-      (e-or-p-based/e#-tags-only-single-query
-        ;; using min(id) as row id cursor for pagination purposes here -- but for this
-        ;; overall strategy to work we are relying on the insertion of tags to produce
-        ;; consecutive row ids in the denormalized tags table for the given source event
-        ;; with subsequent insertions claiming later rowids.
-        "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-        e# ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :e-tags-only
       (and (pos? num-#p)
         (every? zero? [num-ids num-kinds num-authors num-#e num-generic-tags]))
-      (e-or-p-based/p#-tags-only-single-query
-        ;; using min(id) -- see min(id) note above.
-        "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-        p# ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :p-tags-only
       ;; -- common pair attr queries --
       (and (pos? num-kinds) (pos? num-authors)
         (every? zero? [num-ids num-#e num-#p num-generic-tags]))
-      (pubkey-based/pubkeys-and-kinds-only-single-query
-        "id, event_id, created_at" authors kinds ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :pubkeys-and-kinds-only
       (and (pos? num-kinds) (pos? num-#e)
         (every? zero? [num-ids num-authors num-#p num-generic-tags]))
-      (e-or-p-based/e#-tags-and-kinds-only-single-query
-        ;; using min(id) -- see min(id) note above.
-        "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-        e# kinds ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :e-tags-and-kinds-only
       (and (pos? num-kinds) (pos? num-#p)
         (every? zero? [num-ids num-authors num-#e num-generic-tags]))
-      (e-or-p-based/p#-tags-and-kinds-only-single-query
-        ;; using min(id) -- see min(id) note above.
-        "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-        p# kinds ?endcap-created-at endcap-row-id override-limit
-        :since since :until until)
+      :p-tags-and-kinds-only
       :else ;; non-optimized path
-      (legacy-query/generic-filter->query-new "v.id, v.event_id, v.created_at" filter
-        :override-limit override-limit
-        :?endcap-row-id endcap-row-id
-        :?endcap-created-at ?endcap-created-at))))
+      :generic-unoptimized)))
+
+(defn stereotyped-filter->query
+  [stereotype
+   {:keys [ids kinds since until authors] _limit :limit e# :#e p# :#p :as the-filter}
+   & {:keys [endcap-row-id ?endcap-created-at override-limit]}]
+  {:pre [(some? endcap-row-id) (some? override-limit)]}
+  (case stereotype
+    ;; -- single attr only queries --
+    :kinds-only
+    (kind-based/kinds-only-single-query
+      "id, event_id, created_at" kinds ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :pubkeys-only
+    (pubkey-based/pubkeys-only-single-query
+      "id, event_id, created_at" authors ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :e-tags-only
+    (e-or-p-based/e#-tags-only-single-query
+      ;; using min(id) as row id cursor for pagination purposes here -- our sql
+      ;; query limit is applied *after* the group-by/min so that any min(id)
+      ;; we obtain should truly be the min id for any given source_event_id
+      ;; ASSUMING that the source_event_created_at is identical for every source_event_id.
+      "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
+      e# ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :p-tags-only
+    (e-or-p-based/p#-tags-only-single-query
+      ;; using min(id) -- see min(id) note above.
+      "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
+      p# ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    ;; -- common pair attr queries --
+    :pubkeys-and-kinds-only
+    (pubkey-based/pubkeys-and-kinds-only-single-query
+      "id, event_id, created_at" authors kinds ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :e-tags-and-kinds-only
+    (e-or-p-based/e#-tags-and-kinds-only-single-query
+      ;; using min(id) -- see min(id) note above.
+      "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
+      e# kinds ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :p-tags-and-kinds-only
+    (e-or-p-based/p#-tags-and-kinds-only-single-query
+      ;; using min(id) -- see min(id) note above.
+      "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
+      p# kinds ?endcap-created-at endcap-row-id override-limit
+      :since since :until until)
+    :generic-unoptimized
+    (legacy-query/generic-filter->query-new "v.id, v.event_id, v.created_at" the-filter
+      :override-limit override-limit
+      :?endcap-row-id endcap-row-id
+      :?endcap-created-at ?endcap-created-at)))
+
+;; this version primarily for testing:
+(defn filter->query [the-filter & more]
+  (apply stereotyped-filter->query
+    (stereotype-filter the-filter)
+    the-filter more))
 
 (defn- make-union-query
   [multiple-sql-params]
@@ -95,19 +132,44 @@
   {:pre [(not-empty active-filters)]}
   (make-union-query
     (map-indexed
-      (fn [idx {:keys [the-filter page-size remaining-quota cursor-row-id] :as _active-filter}]
-        (let [[sql & sql-args] (filter->query the-filter
+      (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id] :as _active-filter}]
+        (let [[sql & sql-args] (stereotyped-filter->query stereotype the-filter
                                  :endcap-row-id cursor-row-id
                                  :override-limit (min remaining-quota page-size))]
           (apply vector (format "select %d as filter_index, * from (%s)" idx sql) sql-args)))
       active-filters)))
 
+(defn execute-active-filters
+  [read-db active-filters]
+  (jdbc/execute! read-db (active-filters->query active-filters)
+    {:builder-fn rs/as-unqualified-lower-maps}))
+
+(defn- pick-max-row-id
+  [stereotype max-row-ids]
+  {:pre [(instance? TableMaxRowIds max-row-ids)]
+   :post [(some? %)]}
+  (case stereotype
+    :kinds-only (:n-events-id max-row-ids)
+    :pubkeys-only (:n-events-id max-row-ids)
+    :e-tags-only (:e-tags-id max-row-ids)
+    :p-tags-only (:p-tags-id max-row-ids)
+    :pubkeys-and-kinds-only (:n-events-id max-row-ids)
+    :e-tags-and-kinds-only (:e-tags-id max-row-ids)
+    :p-tags-and-kinds-only (:p-tags-id max-row-ids)
+    :generic-unoptimized (:n-events-id max-row-ids)))
+
 (defn init-active-filter
   [{:keys [limit] :as f}
-   & {:keys [page-size cursor-row-id override-quota]
+   & {:keys [page-size table-target-ids override-quota]
       :or {page-size 250
-           cursor-row-id Integer/MAX_VALUE}}]
-  (->ActiveFilterState f page-size (or override-quota limit Integer/MAX_VALUE) cursor-row-id))
+           table-target-ids (domain/->TableMaxRowIds
+                              Integer/MAX_VALUE
+                              Integer/MAX_VALUE
+                              Integer/MAX_VALUE
+                              Integer/MAX_VALUE)}}]
+  (let [stereotype (stereotype-filter f)]
+    (->ActiveFilterState stereotype f page-size (or override-quota limit Integer/MAX_VALUE)
+      (pick-max-row-id stereotype table-target-ids))))
 
 (defn next-active-filters
   [active-filters prev-page-stats]

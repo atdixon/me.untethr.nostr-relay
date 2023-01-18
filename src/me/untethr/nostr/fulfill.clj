@@ -53,7 +53,7 @@
   (->Registry {} {}))
 
 (defn- fulfill-entirely!
-  [metrics readonly-db readonly-db-kv channel-id req-id cancelled?-vol filters target-row-id observer completion-callback]
+  [metrics readonly-db readonly-db-kv channel-id req-id cancelled?-vol filters table-max-ids observer completion-callback]
   (try
     (let [tally (volatile! 0)]
       (metrics/time-fulfillment! metrics
@@ -63,7 +63,7 @@
                            (cond-> %
                              (contains? % :limit) (update :limit min overall-limit))
                            :page-size overall-limit
-                           :cursor-row-id target-row-id) filters))
+                           :table-target-ids table-max-ids) filters))
               page-of-ids (mapv :event_id
                             (jdbc/execute! readonly-db q
                               {:builder-fn rs/as-unqualified-lower-maps}))]
@@ -96,9 +96,9 @@
   "In most cases we'll want to use `submit!` fn for asynchronous fulfillment. However,
    upstream caller/s may wish to perform synchronous fulfillment for certain requests that
    are expected to answer quickly. Use with care!"
-  [metrics readonly-db readonly-db-kv channel-id req-id filters target-row-id observer eose-callback]
+  [metrics readonly-db readonly-db-kv channel-id req-id filters table-max-ids observer eose-callback]
   (let [cancelled?-vol (volatile! false)]
-    (fulfill-entirely! metrics readonly-db readonly-db-kv channel-id req-id cancelled?-vol filters target-row-id observer eose-callback)))
+    (fulfill-entirely! metrics readonly-db readonly-db-kv channel-id req-id cancelled?-vol filters table-max-ids observer eose-callback)))
 
 (defn- add-to-registry!
   [fulfill-atom channel-id sid ^Future fut cancelled?-vol]
@@ -122,12 +122,12 @@
       (throw e))))
 
 (defn submit!
-  ^Future [metrics readonly-db readonly-db-kv fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  ^Future [metrics readonly-db readonly-db-kv fulfill-atom channel-id req-id filters table-max-ids observer eose-callback]
   (let [sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
         f (.submit global-pool
             ^Runnable (partial fulfill-entirely! metrics readonly-db readonly-db-kv channel-id req-id
-                        cancelled?-vol filters target-row-id observer eose-callback))]
+                        cancelled?-vol filters table-max-ids observer eose-callback))]
     (add-to-registry! fulfill-atom channel-id sid f cancelled?-vol)
     f))
 
@@ -166,7 +166,7 @@
             page-of-ids))))))
 
 (defn submit-use-batching!
-  ^Future [metrics readonly-db readonly-db-kv fulfill-atom channel-id req-id filters target-row-id observer eose-callback]
+  ^Future [metrics readonly-db readonly-db-kv fulfill-atom channel-id req-id filters table-max-ids observer eose-callback]
   (let [start-nanos (System/nanoTime)
         sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
@@ -206,7 +206,7 @@
                                         :override-quota (min (or (:limit %) max-fulfillment-rows-per-filter)
                                                           max-fulfillment-rows-per-filter)
                                         :page-size batch-size
-                                        :cursor-row-id target-row-id) filters)
+                                        :table-target-ids table-max-ids) filters)
         _first-batch-future (try
                               (->> (.submit global-pool ^Runnable (partial batch-fn initial-active-filters 0 0))
                                 (vreset! latest-task-future-vol))

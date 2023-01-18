@@ -12,14 +12,18 @@ pragma journal_size_limit = 16777216;
 --
 -- auto_vacuum = incremental only valid for newly created tables:
 --   https://www.sqlite.org/pragma.html#pragma_auto_vacuum
-pragma auto_vacuum = incremental;
+--   note: not sure if auto_vacuum applied in jan deployment due to pragma
+--          handling at the time
+pragma auto_vacuum = INCREMENTAL;
 --
 -- taking control of autocheckpoint means we'll have to do it ourself:
 pragma wal_autocheckpoint = -1;
 -- would autocheckpoint work if we never close write conn?
 -- pragma wal_autocheckpoint = 1000;
 --
-pragma synchronous = NORMAL;
+-- @see https://stackoverflow.com/questions/1711631/improve-insert-per-second-performance-of-sqlite
+pragma synchronous = OFF;
+-- pragma synchronous = NORMAL;
 --
 pragma foreign_keys = OFF;
 --
@@ -159,9 +163,15 @@ begin
 end;
 --
 -- Whenever we insert a new replaceable n_events it may nor may not insert
--- as deleted_ depending on the prior trigger. So we need insert triggers
+-- as deleted_ depending on the prior trigger (b/c it may not be the latest
+-- event of the replaceable kind for the pubkey). So we need insert triggers
 -- for each denormalized tag table so their source_event_deleted_ inserts
--- with the same deleted_ status within the transactions.
+-- with the same deleted_ status as the source event.
+--
+-- Note ALSO that we insert tags via "continuations" - in the case that we
+-- have a new replaceable event arrive but we are processing the tags for the
+-- *replaced* event via continuations, we want those subsequent continuation
+-- tag inserts to obtain the proper source_event_deleted_ status. Win/win here.
 --
 create trigger if not exists insert_replaceable_kind_e_tags
     after insert

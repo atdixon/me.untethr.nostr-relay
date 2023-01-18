@@ -15,16 +15,21 @@
   [^MetricRegistry codahale-registry
    ^MemoryUsageGaugeSet jvm-memory-usage
    ^Gauge quick-row-count
+   ^Gauge quick-row-count-p-tags
+   ^Gauge quick-row-count-e-tags
+   ^Gauge quick-row-count-x-tags
    ^Gauge websocket-registry-size
    ^Gauge active-subscriptions
    ^Gauge active-filter-prefixes
    ^Gauge active-firehose-filters
    ^Gauge active-fullfillments
+   ^Gauge write-thread-backlog
    ^Counter websocket-counter
    ^Meter websocket-created
    ^Histogram websocket-lifetime-secs
    ^Timer verify-timer
    ^Timer store-event-timer
+   ^Timer exec-continuation-timer
    ^Timer insert-channel-timer
    ^Timer notify-event-timer
    ^Histogram notify-num-candidates
@@ -43,6 +48,16 @@
    ^Meter fulfillment-interrupt
    ^Meter fulfillment-error
    ^Counter fulfillment-active-threads-counter
+   ^Histogram db-sweep-limit
+   ^Timer db-purge-deleted-timer
+   ^Timer db-checkpoint-timer
+   ^Histogram db-checkpoint-pages
+   ^Meter db-checkpoint-partial
+   ^Meter db-checkpoint-full
+   ^Timer db-kv-checkpoint-timer
+   ^Histogram db-kv-checkpoint-pages
+   ^Meter db-kv-checkpoint-partial
+   ^Meter db-kv-checkpoint-full
    ])
 
 (defn create-jackson-metrics-module
@@ -57,25 +72,38 @@
 
 (defn create-metrics
   ([] ;; arity for testing
-   (create-metrics
-     (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1) (constantly -1)))
-  ([quick-row-count-fn websocket-registry-size-fn num-subscriptions-fn num-filter-prefixes-fn
-    num-firehose-filters-fn num-fulfillments-fn]
+   (let [stub (constantly -1)]
+     (create-metrics stub stub stub stub stub stub stub stub stub stub)))
+  ([quick-n-events-row-count-fn
+    quick-p-tags-row-count-fn
+    quick-e-tags-row-count-fn
+    quick-x-tags-row-count-fn
+    websocket-registry-size-fn
+    num-subscriptions-fn
+    num-filter-prefixes-fn
+    num-firehose-filters-fn
+    num-fulfillments-fn
+    write-thread-backlog-size-fn]
    (let [codahale (new-registry)]
      (->Metrics
        codahale
        (metrics-core/add-metric codahale ["jvm" "memory"] (memory-usage-gauge-set))
-       (gauge-fn codahale ["app" "store" "quick-row-count"] quick-row-count-fn)
+       (gauge-fn codahale ["app" "store" "quick-row-count"] quick-n-events-row-count-fn)
+       (gauge-fn codahale ["app" "store" "quick-row-count-p-tags"] quick-p-tags-row-count-fn)
+       (gauge-fn codahale ["app" "store" "quick-row-count-e-tags"] quick-e-tags-row-count-fn)
+       (gauge-fn codahale ["app" "store" "quick-row-count-x-tags"] quick-x-tags-row-count-fn)
        (gauge-fn codahale ["app" "websocket-registry" "size-est"] websocket-registry-size-fn)
        (gauge-fn codahale ["app" "subscribe" "active-subscriptions"] num-subscriptions-fn)
        (gauge-fn codahale ["app" "subscribe" "active-filter-prefixes"] num-filter-prefixes-fn)
        (gauge-fn codahale ["app" "subscribe" "active-firehose-filters"] num-firehose-filters-fn)
        (gauge-fn codahale ["app" "subscribe" "fulfillment-active"] num-fulfillments-fn)
+       (gauge-fn codahale ["app" "write-thread" "backlog"] write-thread-backlog-size-fn)
        (counter codahale ["app" "websocket" "active"])
        (meter codahale ["app" "websocket" "created"])
        (histogram codahale ["app" "websocket" "lifetime-secs"])
        (timer codahale ["app" "event" "verify"])
        (timer codahale ["app" "event" "store"])
+       (timer codahale ["app" "event" "continuation"])
        (timer codahale ["app" "channel" "insert"])
        (timer codahale ["app" "event" "notify"])
        (histogram codahale ["app" "subscribe" "notify-num-candidates"])
@@ -93,7 +121,17 @@
        (histogram codahale ["app" "subscribe" "fulfillment-num-rows"])
        (meter codahale ["app" "subscribe" "fulfillment-interrupt"])
        (meter codahale ["app" "subscribe" "fulfillment-error"])
-       (counter codahale ["app" "subscribe" "fulfillment-active-threads"])))))
+       (counter codahale ["app" "subscribe" "fulfillment-active-threads"])
+       (histogram codahale ["db" "sweep" "limit"])
+       (timer codahale ["db" "sweep" "latency"])
+       (timer codahale ["db" "checkpoint" "latency"])
+       (histogram codahale ["db" "checkpoint" "num-pages"])
+       (meter codahale ["db" "checkpoint" "partial"])
+       (meter codahale ["db" "checkpoint" "full"])
+       (timer codahale ["db-kv" "checkpoint" "latency"])
+       (histogram codahale ["db-kv" "checkpoint" "num-pages"])
+       (meter codahale ["db-kv" "checkpoint" "partial"])
+       (meter codahale ["db-kv" "checkpoint" "full"])))))
 
 (defn websocket-open!
   [metrics]
@@ -132,6 +170,18 @@
 (defmacro time-store-event!
   [metrics & body]
   `(time! (:store-event-timer ~metrics) ~@body))
+
+(defmacro time-exec-continuation!
+  [metrics & body]
+  `(time! (:exec-continuation-timer ~metrics) ~@body))
+
+(defmacro time-purge-deleted!
+  [metrics & body]
+  `(time! (:db-purge-deleted-timer ~metrics) ~@body))
+
+(defn db-sweep-limit!
+  [metrics n]
+  (update! (:db-sweep-limit metrics) n))
 
 (defmacro time-insert-channel!
   [metrics & body]
@@ -188,3 +238,35 @@
 (defn mark-fulfillment-error!
   [metrics]
   (mark! (:fulfillment-error metrics)))
+
+(defmacro time-db-checkpoint!
+  [metrics & body]
+  `(time! (:db-checkpoint-timer ~metrics) ~@body))
+
+(defn db-checkpoint-pages!
+  [metrics n]
+  (update! (:db-checkpoint-pages metrics) n))
+
+(defn mark-db-checkpoint-partial!
+  [metrics]
+  (mark! (:db-checkpoint-partial metrics)))
+
+(defn mark-db-checkpoint-full!
+  [metrics]
+  (mark! (:db-checkpoint-full metrics)))
+
+(defmacro time-db-kv-checkpoint!
+  [metrics & body]
+  `(time! (:db-kv-checkpoint-timer ~metrics) ~@body))
+
+(defn db-kv-checkpoint-pages!
+  [metrics n]
+  (update! (:db-kv-checkpoint-pages metrics) n))
+
+(defn mark-db-kv-checkpoint-partial!
+  [metrics]
+  (mark! (:db-kv-checkpoint-partial metrics)))
+
+(defn mark-db-kv-checkpoint-full!
+  [metrics]
+  (mark! (:db-kv-checkpoint-full metrics)))
