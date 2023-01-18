@@ -84,6 +84,12 @@
           (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
                                            {:authors [support/fake-hex-64-str]
                                             :kinds [1 2 3]}])))
+    ;; regression check here,
+    (is (every? vector?
+          (keep :kinds
+            (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
+                                           {:authors [support/fake-hex-64-str]
+                                            :kinds [1 2 3]}]))))
     (is (= [{} {:authors [support/fake-hex-64-str]}]
           (#'app/prepare-req-filters conf [{} {} {:authors [support/fake-hex-64-str]}
                                            {:authors [support/fake-hex-64-str]

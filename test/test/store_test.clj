@@ -16,8 +16,8 @@
 (deftest pragma-test
   (support/with-memory-db-new-schema [db]
     (is (= {:journal_size_limit 16777216
-            :cache_size -2000 ;; -1600
-            :page_size 4096 ;; 16384
+            :cache_size -2000
+            :page_size 4096
             :auto_vacuum 2
             :wal_autocheckpoint 0
             :synchronous 0
@@ -33,7 +33,7 @@
              :foreign_keys]))))
   (support/with-memory-db-kv-schema [db-kv]
     (is (= {:journal_size_limit 16777216
-            :cache_size -16000
+            :cache_size -4000
             :page_size 16384
             :auto_vacuum 2
             :wal_autocheckpoint 0

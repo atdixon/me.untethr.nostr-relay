@@ -356,7 +356,7 @@
           (let [modified-filter
                 (update one-filter :kinds
                   (fn [kinds-vec]
-                    (remove #(not (conf/serves-kind? conf %)) kinds-vec)))]
+                    (vec (remove #(not (conf/serves-kind? conf %)) kinds-vec))))]
             ;; ...and, finally, if the remaining kinds is empty then we're
             ;;  going to answer nil so this filter is effectively erased from
             ;;  the filters list...

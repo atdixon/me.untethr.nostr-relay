@@ -11,7 +11,7 @@ pragma journal_size_limit = 16777216;
 -- https://www.sqlite.org/pragma.html#pragma_cache_size
 -- we'll set it to eight times the default for now, ultimately may want to make
 -- this app config but first need to benchmark analysis
-pragma cache_size = -16000;
+pragma cache_size = -4000;
 --
 -- https://www.sqlite.org/pragma.html#pragma_page_size
 -- https://www2.sqlite.org/matrix/intern-v-extern-blob.html
