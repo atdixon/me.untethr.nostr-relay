@@ -11,7 +11,8 @@
     [me.untethr.nostr.common.store :as store]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs])
-  (:import (java.util.concurrent CountDownLatch TimeUnit)))
+  (:import (java.util.concurrent CountDownLatch TimeUnit)
+           (javax.sql DataSource)))
 
 (deftest pragma-test
   (support/with-memory-db-new-schema [db]

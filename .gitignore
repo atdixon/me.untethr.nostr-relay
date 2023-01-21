@@ -38,8 +38,7 @@ build/
 
 n.db*
 n-test.db*
-nn.db*
-nn-kv.db*
+nn*db*
 
 .cpcache
 dump

@@ -216,6 +216,9 @@
            rv))))
     ;; this is what we'd get if added ?open_mode= to jdbc url query-string
     (.setReadOnly read-only?)
+    ;; https://www.sqlite.org/sharedcache.html#read_uncommitted_isolation_mode
+    ;;   sure, why not.
+    (.setReadUncommited true)
     ;; notable we are NOT using query params in the jdbc url to specify pragmas
     ;; or anything else. if we do, we need to reconsider how tests call this
     ;; also make sure that the query params we add don't show up in the filename
@@ -382,7 +385,9 @@
     {:builder-fn rs/as-unqualified-lower-maps}))
 
 (defn insert-event-new-schema!
-  "Answers inserted sqlite rowid or nil if row already exists."
+  "Answers inserted sqlite rowid or nil if row already exists (assuming
+   auto-commit; when auto-commit = false, even with read-uncommitted we'll
+   always get back the `returning id`)."
   ([writeable-db id pubkey created-at kind]
    (insert-event-new-schema! writeable-db id pubkey created-at kind nil))
   ([writeable-db id pubkey created-at kind channel-id]
@@ -486,7 +491,9 @@
 ;; -- facade --
 
 (defn store-event-kv!-
-  "Answers event_id or nil if row already exists."
+  "Answers event_id or nil if row already exists (note: if auto-commit is
+   false even with read-uncommitted, we'll always get `returning event_id`
+   even if record already exists)."
   [writeable-conn-kv event-id raw-event]
   (:event_id
     (jdbc/execute-one! writeable-conn-kv
@@ -534,6 +541,9 @@
    ;; and repair events that are partially indexed. we'll log errors and such for
    ;; record. consider strategy of efficiently tracking which k/v events are
    ;; not yet fully indexed, say.
+   ;;
+   ;; no matter what our datasource's auto-commit is, jdbc.next's with-transaction
+   ;; will begin/commit.
    (jdbc/with-transaction [tx writeable-conn]
      (if-let [rowid (insert-event-new-schema! tx id pubkey created_at kind channel-id)]
        ;; !!! NOTE presently our query and pagination strategy depend on the tags for new
@@ -573,6 +583,14 @@
    ;; be ok -- implication might be that a websocket that wrote, disconnected and
    ;; tried to read might not immediately see their write -- but would we care?
    (if-let [_kv-event-id (store-event-kv!- writeable-conn-kv id raw-event)]
+     ;; if we've disabled auto-commit, we may arrive here with a kv-event-id
+     ;; even if we've already inserted the event but have not yet committed.
+     ;; we're fine with that. we're idempotent in our indexing here. it just
+     ;; means we may not in certain race conditions where we receive the self-
+     ;; same event twice in super-short succession we won't return :duplicate to
+     ;; upstream callers (who may then do something like broadcast both short-
+     ;; succession events twice; should be rare unless we're getting duplicate
+     ;; events fired at us from some non-client in rapid succession)
      (let [duplicate-or-continuation
            (store-event-new-schema!- writeable-conn channel-id event-obj)]
        (cond
