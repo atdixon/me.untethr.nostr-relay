@@ -40,7 +40,7 @@
   (str jdbc-url (if (str/includes? jdbc-url "?") "&" "?") query-str))
 
 (defn- create-readonly-hikari-datasource
-  ^HikariDataSource [pool-name ro-sqlite-ds pragma-statements]
+  ^HikariDataSource [pool-name ro-sqlite-ds]
   (HikariDataSource.
     (doto (HikariConfig.)
       (.setPoolName pool-name)
@@ -79,39 +79,78 @@
       ;; Trying 25s for now for leakDetectionThreshold.
       (.setLeakDetectionThreshold (* 25 1000)))))
 
+(defn- create-write-enabled-hikari-datasource
+  ^HikariDataSource [pool-name wr-sqlite-ds]
+  (HikariDataSource.
+    (doto (HikariConfig.)
+      (.setPoolName pool-name)
+      (.setReadOnly false)
+      (.setDataSource wr-sqlite-ds)
+      ;; no auto-commit! danger zone! we must take care to manage commits
+      ;; explicitly.
+      (.setAutoCommit false)
+      (.setConnectionTimeout (* 15 1000))
+      (.setIdleTimeout 0)
+      (.setKeepaliveTime (* 5 60 1000))
+      (.setMaximumPoolSize 1) ;; really consider if changing this from 1.
+      (.setMaxLifetime 0)
+      ;; disable leak detection entirely - as we may take out connection
+      ;; for writes forever.
+      (.setLeakDetectionThreshold 0 #_zero!!!))))
+
 (defn- create-readonly-connection-pool
   "Create a connection pool. Our configuration here has all of our connections
    living forever in a fixed-sized pool. While the pool may or may not give us
    enormous benefit over a file-sys based db like sqlite, it's integration with
    metrics gives us a ton of observability with what's happening with the db."
-  (^DataSource [pool-name ro-sqlite-ds pragma-statements]
-   (create-readonly-connection-pool pool-name ro-sqlite-ds pragma-statements nil))
-  (^DataSource [pool-name ro-sqlite-ds pragma-statements ^MetricRegistry metric-registry]
-   (let [the-pool (create-readonly-hikari-datasource pool-name ro-sqlite-ds pragma-statements)]
+  (^DataSource [pool-name ro-sqlite-ds]
+   (create-readonly-connection-pool pool-name ro-sqlite-ds nil))
+  (^DataSource [pool-name ro-sqlite-ds ^MetricRegistry metric-registry]
+   (let [the-pool (create-readonly-hikari-datasource pool-name ro-sqlite-ds)]
      (when (some? metric-registry)
        (.setMetricsTrackerFactory the-pool
          (CodahaleMetricsTrackerFactory. metric-registry)))
      the-pool)))
 
-(defn ^:deprecated get-simplest-datasource
-  [path pragma-statements]
-  (jdbc/get-datasource
-    (append-query-string (str "jdbc:sqlite:" path)
-      (pragma-statements->query-string pragma-statements))))
+(defn- create-writeable-connection-pool
+  (^DataSource [pool-name wr-sqlite-ds]
+   (create-writeable-connection-pool pool-name wr-sqlite-ds nil))
+  (^DataSource [pool-name wr-sqlite-ds ^MetricRegistry metric-registry]
+   (let [the-pool (create-write-enabled-hikari-datasource pool-name wr-sqlite-ds)]
+     (when (some? metric-registry)
+       (.setMetricsTrackerFactory the-pool
+         (CodahaleMetricsTrackerFactory. metric-registry)))
+     the-pool)))
 
-(def ^:deprecated get-unpooled-writeable-datasource*
-  (memoize
-    #(get-simplest-datasource %1 %2)))
+;(defn ^:deprecated get-simplest-datasource
+;  [path]
+;  (jdbc/get-datasource (str "jdbc:sqlite:" path)
+;    ;; this is no good b/c not all pragmas (such as wal_autocheckpoint)
+;    ;;   are supported by sqlite jdbc so some query path pragmas remain unapplied
+;    ;;   and worse the filename of the db file gets the remaining query strings.
+;    #_(append-query-string (str "jdbc:sqlite:" path)
+;      (pragma-statements->query-string pragma-statements))))
+;
+;(def ^:deprecated get-unpooled-writeable-datasource*
+;  (memoize
+;    #(get-simplest-datasource %1)))
 
 (def get-readonly-datasource*
   (memoize
-    (fn [pool-name ro-sqlite-ds pragma-statements metrics-registry]
+    (fn [pool-name ro-sqlite-ds metrics-registry]
       ;; note for future: we do NOT care for "cache=shared"
       ;;   @see https://www.sqlite.org/sharedcache.html#use_of_shared_cache_is_discouraged
       (create-readonly-connection-pool
         pool-name
         (wrap-datasource-with-p6spy ro-sqlite-ds)
-        pragma-statements
+        metrics-registry))))
+
+(def get-writeable-datasource*
+  (memoize
+    (fn [pool-name wr-sqlite-ds metrics-registry]
+      (create-writeable-connection-pool
+        pool-name
+        (wrap-datasource-with-p6spy wr-sqlite-ds)
         metrics-registry))))
 
 (defn- comment-line?
@@ -162,7 +201,7 @@
 ;; --
 
 (defn create-sqlite-datasource
-  [path {:keys [pragma-statements] :as parsed-schema}
+  [path parsed-schema
    & {:keys [read-only?] :or {read-only? false}}]
   (doto
     (proxy [SQLiteDataSource] []
@@ -187,49 +226,50 @@
 
 (defn ^:deprecated init!
   [path ^MetricRegistry metric-registry]
-  (let [{:keys [pragma-statements] :as parsed-schema} (parse-schema "schema-deprecated.sql")
+  (let [parsed-schema (parse-schema "schema-deprecated.sql")
         ro-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? true)
-        ;; todo explain pragma here and then apply etc.
         wr-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? false)
         _ (apply-ddl-statements! wr-sqlite-ds parsed-schema)]
     {:writeable-datasource wr-sqlite-ds
      :readonly-datasource
      (get-readonly-datasource*
-       "legacy-readonly-pool" ro-sqlite-ds pragma-statements metric-registry)}))
+       "legacy-readonly-pool" ro-sqlite-ds metric-registry)}))
 
 (defn init-new!
   [path ^MetricRegistry metric-registry]
   ;; note: must create writeable first so that in the case of a brand-spanking
   ;; new db we create it (write it!) before trying to open it in readonly mode.
   ;; otherwise, we'll get a failure.
-  (let [{:keys [pragma-statements] :as parsed-schema} (parse-schema "schema-new.sql")
+  (let [parsed-schema (parse-schema "schema-new.sql")
         ro-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? true)
-        ;; todo explain pragma here and then apply etc.
         wr-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? false)
         _ (apply-ddl-statements! wr-sqlite-ds parsed-schema)]
-    {:writeable-datasource wr-sqlite-ds
+    {:writeable-datasource
+     (get-writeable-datasource*
+       "db-writeable" wr-sqlite-ds metric-registry)
      :readonly-datasource
      (get-readonly-datasource*
        ;; note metrics-porcelin known dependency on the pool name provided
        ;; here:
-       "db-readonly" ro-sqlite-ds pragma-statements metric-registry)}))
+       "db-readonly" ro-sqlite-ds metric-registry)}))
 
 (defn init-new-kv!
   [path ^MetricRegistry metric-registry]
   ;; note: must create writeable first so that in the case of a brand-spanking
   ;; new db we create it (write it!) before trying to open it in readonly mode.
   ;; otherwise, we'll get a failure.
-  (let [{:keys [pragma-statements] :as parsed-schema} (parse-schema "schema-kv.sql")
+  (let [parsed-schema (parse-schema "schema-kv.sql")
         ro-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? true)
-        ;; todo explain pragma here and then apply etc.
         wr-sqlite-ds (create-sqlite-datasource path parsed-schema :read-only? false)
         _ (apply-ddl-statements! wr-sqlite-ds parsed-schema)]
-    {:writeable-datasource wr-sqlite-ds
+    {:writeable-datasource
+     (get-writeable-datasource*
+       "db-kv-writeable" wr-sqlite-ds metric-registry)
      :readonly-datasource
      (get-readonly-datasource*
        ;; note metrics-porcelin known dependency on the pool name provided
        ;; here:
-       "db-kv-readonly" ro-sqlite-ds pragma-statements metric-registry)}))
+       "db-kv-readonly" ro-sqlite-ds metric-registry)}))
 
 (defn collect-pragmas!
   [db]

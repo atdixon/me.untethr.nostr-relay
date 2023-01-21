@@ -16,7 +16,7 @@ supported-kinds: ["0-5", "6", "7", "40-49", "10000-19999", "20000-29999"]
 
 # Optional. Don't want to serve reactions? ephemeral events or what-have-you?
 # Can disable here. We'll still store them per `supported-kinds` config option.
-unserved-kinds: ["7"]
+# unserved-kinds: ["7"]
 
 # Optional. If not specified, then content of any length is accepted.
 max-content-length: 1048576
@@ -25,6 +25,11 @@ max-content-length: 1048576
 # If specified, events with a created_at more than the current system's
 # epoch millis *plus* this delta will be accepted.
 max-created-at-delta: 2700
+
+# Optional. Support for NIP-42.
+#  See https://github.com/nostr-protocol/nips/blob/master/42.md
+auth:
+  enabled: true
 
 # Optional websockets config.
 websockets:

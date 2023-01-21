@@ -16,18 +16,21 @@
    ^Long optional-max-created-at-delta
    ^Long websockets-max-outgoing-frames
    websockets-disable-permessage-deflate?
-   websockets-enable-batch-mode?])
+   websockets-enable-batch-mode?
+   nip42-auth-enabled?])
 
 (defn pretty* [{:keys [optional-hostname
                        http-port
                        sqlite-file
                        sqlite-kv-file
                        optional-supported-kinds-range-set
+                       optional-unserved-kinds-range-set
                        optional-max-content-length
                        optional-max-created-at-delta
                        websockets-max-outgoing-frames
                        websockets-disable-permessage-deflate?
-                       websockets-enable-batch-mode?] :as _conf}]
+                       websockets-enable-batch-mode?
+                       nip42-auth-enabled?] :as _conf}]
   (str/join
     "\n"
     [(format "hostname: %s" (or optional-hostname "none specified"))
@@ -39,7 +42,9 @@
      (format "websockets-max-outgoing-frames: %s" (or websockets-max-outgoing-frames "<unlimited>"))
      (format "websockets-disable-permessage-deflate: %s" (or websockets-disable-permessage-deflate? false))
      (format "websockets-enable-batch-mode: %s" (or websockets-enable-batch-mode? false))
-     (format "supported nip-1 kinds: %s" (or (some-> optional-supported-kinds-range-set str) "all of them"))]))
+     (format "supported nip-1 kinds: %s" (or (some-> optional-supported-kinds-range-set str) "all of them"))
+     (format "unserved nip-1 kinds: %s" (or (some-> optional-unserved-kinds-range-set str) "none of them"))
+     (format "nip42-auth-enabled: %s" (if nip42-auth-enabled? "yes" "no"))]))
 
 (defn- parse-kinds-ranges-vec
   [kinds-ranges-vec]
@@ -116,4 +121,5 @@
       (some-> (get from-yaml :max-created-at-delta) long)
       (get-in from-yaml [:websockets :max-outgoing-frames])
       (get-in from-yaml [:websockets :disable-permessage-deflate])
-      (get-in from-yaml [:websockets :enable-batch-mode]))))
+      (get-in from-yaml [:websockets :enable-batch-mode])
+      (get-in from-yaml [:auth :enabled]))))

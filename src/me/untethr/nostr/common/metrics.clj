@@ -1,5 +1,7 @@
 (ns me.untethr.nostr.common.metrics
   (:require
+    [me.untethr.nostr.common.ws-registry :as ws-registry]
+    [me.untethr.nostr.util :as util]
     [metrics.core :as metrics-core :refer [new-registry]]
     [metrics.counters :refer [counter inc! dec!]]
     [metrics.gauges :refer [gauge gauge-fn]]
@@ -27,6 +29,10 @@
    ^Counter websocket-counter
    ^Meter websocket-created
    ^Histogram websocket-lifetime-secs
+   ^Histogram websocket-total-bytes-in
+   ^Histogram websocket-total-bytes-out
+   ^Histogram websocket-peak-1m-bytes-in
+   ^Histogram websocket-peak-1m-bytes-out
    ^Timer verify-timer
    ^Timer store-event-timer
    ^Timer exec-continuation-timer
@@ -101,6 +107,10 @@
        (counter codahale ["app" "websocket" "active"])
        (meter codahale ["app" "websocket" "created"])
        (histogram codahale ["app" "websocket" "lifetime-secs"])
+       (histogram codahale ["app" "websocket" "total-bytes-in"])
+       (histogram codahale ["app" "websocket" "total-bytes-out"])
+       (histogram codahale ["app" "websocket" "peak-1m-bytes-in"])
+       (histogram codahale ["app" "websocket" "peak-1m-bytes-out"])
        (timer codahale ["app" "event" "verify"])
        (timer codahale ["app" "event" "store"])
        (timer codahale ["app" "event" "continuation"])
@@ -139,9 +149,23 @@
   (inc! (:websocket-counter metrics)))
 
 (defn websocket-close!
-  [metrics duration-ms]
-  (dec! (:websocket-counter metrics))
-  (update! (:websocket-lifetime-secs metrics) (quot duration-ms 1000)))
+  [metrics websocket-state]
+  (let [duration-ms (util/nanos-to-millis
+                      (- (System/nanoTime) (:start-ns websocket-state)))]
+    (dec! (:websocket-counter metrics))
+    (update! (:websocket-lifetime-secs metrics) (long (/ duration-ms 1000)))
+    (let [total-bytes-in (.getCount ^Meter (:bytes-in websocket-state))
+          total-bytes-out (.getCount ^Meter (:bytes-out websocket-state))]
+      ;; we want any last bytes sent or received to get noted in our peak rates:
+      (ws-registry/update-peak-1m-rates! websocket-state)
+      (when (<= duration-ms 60000)
+        ;; for websockets that didn't last a full minute we'll update w/ total bytes
+        (ws-registry/update-peak-1m-rate-bytes-in! websocket-state total-bytes-in)
+        (ws-registry/update-peak-1m-rate-bytes-out! websocket-state total-bytes-out))
+      (update! (:websocket-total-bytes-in metrics) total-bytes-in)
+      (update! (:websocket-total-bytes-out metrics) total-bytes-out)
+      (update! (:websocket-peak-1m-bytes-in metrics) @(:peak-1m-rate-bytes-in-atom websocket-state))
+      (update! (:websocket-peak-1m-bytes-out metrics) @(:peak-1m-rate-bytes-out-atom websocket-state)))))
 
 (defn duplicate-event!
   [metrics]

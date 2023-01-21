@@ -59,17 +59,26 @@
       (get-gauge (:codahale-registry metrics) "db-kv-readonly.pool.PendingConnections")
       (value-of)) "???"))
 
-(defn- histo-summary-as-markup
-  ([metrics k]
-   (histo-summary-as-markup (k metrics)))
+(defn- get-999th [^Snapshot s] (.get999thPercentile s))
+(defn- get-maxth [^Snapshot s] (.getMax s))
+
+(defn- histo-summary-as-markup*
   ([obj]
+   (histo-summary-as-markup* obj get-999th))
+  ([obj top-percentile-fn]
    (let [divisor (if (instance? Timer obj) 1000000 1)
          ^Snapshot snap (cond
                           (instance? Histogram obj) (.getSnapshot ^Histogram obj)
                           (instance? Timer obj) (.getSnapshot ^Timer obj))]
      [:span (long (/ (.getMin snap) divisor)) "/" (long (/ (.getMean snap) divisor))
       "/" [:b (long (/ (.getMedian snap) divisor))] "/"
-      (long (/ (.get999thPercentile snap) divisor))])))
+      (long (/ (top-percentile-fn snap) divisor))])))
+
+(defn- histo-summary-as-markup
+  ([metrics k]
+   (histo-summary-as-markup* (k metrics)))
+  ([metrics k top-percentile-fn]
+   (histo-summary-as-markup* (k metrics) top-percentile-fn)))
 
 (defn- meter-summary-as-markup
   ([metrics k]
@@ -115,7 +124,16 @@
       [:div [:span "Among "
              [:b (count-of metrics :websocket-lifetime-secs)] " websocket channels"
              ", lifespan is " (histo-summary-as-markup metrics :websocket-lifetime-secs)
-             " seconds."]]
+             " seconds"
+             [:br]
+             "Total bytes out*: " (histo-summary-as-markup metrics :websocket-total-bytes-out get-maxth) "."
+             " Total bytes in*: " (histo-summary-as-markup metrics :websocket-total-bytes-in get-maxth) "."
+             [:br]
+             "Peak 1m bytes out*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-out get-maxth) "."
+             " Peak 1m bytes in*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-in get-maxth) "."
+             [:br]
+             "(*Top percentile is max.)"
+             ]]
       [:h3 "Fulfillment"]
       [:div (value-of metrics :active-fullfillments) " active fulfillments; "
        (count-of metrics :fulfillment-active-threads-counter) " threads working at them."]

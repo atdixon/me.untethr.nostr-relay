@@ -9,6 +9,7 @@
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs])
   (:import (com.google.common.util.concurrent FutureCallback Futures ListenableFuture ListeningScheduledExecutorService MoreExecutors ThreadFactoryBuilder)
+           (java.sql Connection)
            (java.time Duration)
            (java.util.concurrent Executors RejectedExecutionException ScheduledExecutorService)))
 
@@ -29,9 +30,9 @@
 
 (defonce next-sweep-limit-vol (volatile! 5))
 (def sweep-min-limit 5)
-(def sweep-max-limit 250)
+(def sweep-max-limit 300)
 (def sweep-period-seconds 1)
-(def sweep-target-millis 75)
+(def sweep-target-millis 50)
 
 (defn schedule-sweep-job!
   [metrics singleton-db-conn singleton-db-kv-conn]
@@ -74,6 +75,7 @@
     (Duration/ofSeconds 15)
     (Duration/ofSeconds sweep-period-seconds)))
 
+(defonce commit-enqueued?-vol (volatile! false))
 (defonce checkpoint-enqueued?-vol (volatile! false))
 (defonce run-async!-backlog-size-atom (atom 0))
 
@@ -94,7 +96,7 @@
     single-event-thread))
 
 (defn- enq-checkpoint!
-  [metrics singleton-db-conn single-db-kv-conn _]
+  [metrics singleton-db-conn single-db-kv-conn]
   (.submit single-event-thread
     ^Runnable
     (fn []
@@ -121,6 +123,26 @@
         (log/debugf "checkpointed kv db (%d ms)"
           (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
 
+(defn- enq-commit!
+  ;; note: we expect a singleton db connection and auto-commit = false
+  ;; todo should we want to close and re-open connections, this is where
+  ;;    we could close/re-connect our singleton connection from hikari pool
+  ;;    and assume it will evict the connection -- we have to do this
+  ;;    right after commit while we're holding the singleton write thread.
+  [metrics ^Connection singleton-db-conn ^Connection single-db-kv-conn]
+  (.submit single-event-thread
+    ^Runnable
+    (fn []
+      (.commit singleton-db-conn)))
+  (.submit single-event-thread
+    ^Runnable
+    (fn []
+      (vreset! commit-enqueued?-vol false)
+      (.commit single-db-kv-conn)
+      (when-not @checkpoint-enqueued?-vol
+        (enq-checkpoint! metrics singleton-db-conn single-db-kv-conn)
+        (vreset! checkpoint-enqueued?-vol true)))))
+
 (defn run-async!
   ^ListenableFuture [metrics singleton-db-conn single-db-kv-conn task-fn success-fn failure-fn]
   {:pre [(fn? task-fn) (fn? success-fn) (fn? failure-fn)]}
@@ -142,9 +164,9 @@
     (add-callback!
       (fn [x]
         (swap! run-async!-backlog-size-atom dec)
-        (when-not @checkpoint-enqueued?-vol
-          (enq-checkpoint! metrics singleton-db-conn single-db-kv-conn x)
-          (vreset! checkpoint-enqueued?-vol true)))
+        (when-not @commit-enqueued?-vol
+          (enq-commit! metrics singleton-db-conn single-db-kv-conn)
+          (vreset! commit-enqueued?-vol true)))
       (fn [_]
         (swap! run-async!-backlog-size-atom dec)))
     (add-callback! success-fn failure-fn)))
@@ -245,6 +267,11 @@
      (fn [store-result]
        (if (identical? store-result :duplicate)
          (duplicate-event-callback)
+         ;; note: we aren't technically waiting for the db commit here (assuming
+         ;; data-source is auto-commit = false and we're relying on the enq-commit
+         ;; so we may want to have this callback await the commit in case we'd
+         ;; like to support pure read-your-writes for clients, and risk losing
+         ;; ok'd messages when racing process death eg..)
          (stored-or-replaced-callback)))
      (fn [^Throwable t]
        (log/error t "while storing event" verified-event-obj)))))

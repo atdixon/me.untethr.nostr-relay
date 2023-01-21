@@ -1,4 +1,11 @@
-(ns me.untethr.nostr.common.domain)
+(ns me.untethr.nostr.common.domain
+  (:import (javax.sql DataSource)))
+
+(defrecord DatabaseCxns
+  [^DataSource readonly-datasource
+   ^DataSource writeable-datasource
+   ^DataSource readonly-kv-datasource
+   ^DataSource writeable-kv-datasource])
 
 (defrecord TableMaxRowIds
   [n-events-id p-tags-id e-tags-id x-tags-id])

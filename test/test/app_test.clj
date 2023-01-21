@@ -24,7 +24,7 @@
    (conf/->Conf nil 1234 "nx.db" "nx-kb.db"
      (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
      (some->> unserved-kinds-vec (hash-map :unserved-kinds) conf/parse-unserved-kinds*)
-     max-content-length max-created-at-delta nil nil nil)))
+     max-content-length max-created-at-delta nil nil nil nil)))
 
 (deftest fulfill-synchronously?-test
   (is (not (#'app/fulfill-synchronously? [])))

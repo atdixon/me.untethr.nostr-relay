@@ -5,7 +5,7 @@
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.common.version :as version]))
 
-(def supported-nips [1, 2, 4, 11, 12, 15, 16, 20, 22])
+(def supported-nips [1, 2, 4, 11, 12, 15, 16, 20, 22, 42])
 
 (defn json
   [nip11-json]

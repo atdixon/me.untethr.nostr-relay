@@ -19,17 +19,20 @@
     [me.untethr.nostr.util :as util]
     [me.untethr.nostr.common.validation :as validation]
     [me.untethr.nostr.write-thread :as write-thread]
-    [me.untethr.nostr.ws-registry :as ws-registry]
+    [me.untethr.nostr.common.ws-registry :as ws-registry]
     [next.jdbc :as jdbc])
   (:import (com.codahale.metrics MetricRegistry)
            (jakarta.servlet.http HttpServletRequest)
            (java.nio.channels ClosedChannelException WritePendingException)
            (java.nio.charset StandardCharsets)
+           (java.security SecureRandom)
            (java.util UUID)
            (java.io File)
            (java.util.concurrent.atomic AtomicInteger)
            (javax.sql DataSource)
+           (me.untethr.nostr.common.domain DatabaseCxns)
            (me.untethr.nostr.conf Conf)
+           (org.apache.commons.lang3 RandomStringUtils)
            (org.eclipse.jetty.io EofException)
            (org.eclipse.jetty.server Server)
            (org.eclipse.jetty.server.handler StatisticsHandler)
@@ -114,7 +117,8 @@
        (update-outgoing-messages! websocket-state :inc)
        (try
          (jetty/send! ch-sess data
-           (fn []
+           (fn [] ;; success
+             (ws-registry/bytes-out! websocket-state (alength ^bytes (.getBytes data)))
              (update-outgoing-messages! websocket-state :dec))
            (fn [^Throwable t]
              (update-outgoing-messages! websocket-state :dec)
@@ -263,7 +267,8 @@
   (some-> event-obj :kind (#(<= 20000 % (dec 30000)))))
 
 (defn- receive-accepted-event!
-  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
+  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv
+   subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
   (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event event-obj))]
     (if (identical? verified-event-or-err-map event-obj)
       ;; For now, we re-render the raw event into json; we could be faster by
@@ -311,7 +316,8 @@
       (handle-invalid-event! metrics websocket-state ch-sess event-obj verified-event-or-err-map))))
 
 (defn- receive-event
-  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
+  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv
+   subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
   ;; Before we attempt to validate an event and its signature (which costs us
   ;; some compute), we'll determine if we're destined to reject the event anyway.
   ;; These are generally rules from configuration - for example, if the event
@@ -319,7 +325,8 @@
   ;; reject it without trying to validate it.
   (if-let [rejection-reason (reject-event-before-verify? conf e)]
     (handle-rejected-event! metrics websocket-state ch-sess e raw-message rejection-reason)
-    (receive-accepted-event! ^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess e raw-message)))
+    (receive-accepted-event! ^Conf conf metrics singleton-writeable-connection
+      singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess e raw-message)))
 
 (def max-filters 20)
 
@@ -510,6 +517,99 @@
           (subscribe/unsubscribe! subs-atom channel-id internal-req-id))
         (fulfill/cancel! fulfill-atom channel-id internal-req-id)))))
 
+;; --
+
+(defn- send-auth-challenge!
+  "Creates a new auth challenge killing the old one (so be careful about
+   outstandings) and sends it to client."
+  [^Conf conf metrics websocket-state websocket-sess]
+  (let [{:keys [auth-challenge-state-atom]} websocket-state
+        new-challenge (RandomStringUtils/random 20 0 0 true true nil (SecureRandom.))
+        _ (reset! auth-challenge-state-atom
+            (ws-registry/create-auth-challenge-state
+              new-challenge (System/nanoTime)))]
+    (send!* websocket-state websocket-sess (write-str* ["AUTH" new-challenge]) true)))
+
+(defn- inc-auth-failure-count!
+  [{:keys [auth-challenge-state-atom] :as _websocket-state}]
+  (swap! auth-challenge-state-atom update :challenge-failure-count (fnil inc 0)))
+
+(defn- handle-auth-failure!
+  [metrics websocket-state ch-sess notice-message-str]
+  (inc-auth-failure-count! websocket-state)
+  (send!* websocket-state ch-sess
+    (create-notice-message notice-message-str)
+    true ;; flush?
+    'handle-auth-failure!))
+
+(defn- get-first-tag-val
+  [e tag-name]
+  (when (vector? (:tags e))
+    (let [candidate (some->
+                      (first
+                        (filter
+                          (fn [[curr-tag-name _curr-tag-val]]
+                            (and (string? curr-tag-name)
+                              (= curr-tag-name tag-name)))
+                          (filter vector? (:tags e))))
+                      second)]
+      (when (string? candidate)
+        candidate))))
+
+
+(defn- receive-auth
+  [^Conf conf metrics uuid websocket-state ch-sess [_ e]]
+  (when (:nip42-auth-enabled? conf) ;; otherwise we're simply silent/no-op when client sends AUTH messages
+    ;; @see https://github.com/nostr-protocol/nips/blob/master/42.md
+    (if (map? e)
+      (let [verified-event-or-err-map (as-verified-event e)]
+        (if (identical? verified-event-or-err-map e)
+          (cond
+            (not= (:kind e) 22242)
+            ;; auth event not the right kind
+            (handle-auth-failure! metrics websocket-state ch-sess
+              "auth-error:auth event was not kind 22242")
+            (or (not (vector? (:tags e)))
+              (empty? (:tags e)))
+            ;; no tags
+            (handle-auth-failure! metrics websocket-state ch-sess
+              "auth-error:no tags in auth event")
+            :else
+            (let [;; we won't validate relay atm - but we'll tolerate several
+                  ;; failures ... in the future we may wish to ignore or count less/
+                  ;; not count when the client was intending to auth another relay
+                  _incoming-relay-tag-str (get-first-tag-val e "relay")
+                  incoming-challenge-tag-str (get-first-tag-val e "challenge")
+                  {:keys [most-recent-failure-type] :as _result}
+                  (swap! (:auth-challenge-state-atom websocket-state)
+                    (fn [{:keys [challenge challenge-satisfied-nanos] :as curr-auth-state}]
+                      (cond
+                        (= incoming-challenge-tag-str challenge)
+                        (if
+                          (some? challenge-satisfied-nanos)
+                          curr-auth-state ;; don't update if they're authing successfully again
+                          (-> curr-auth-state
+                            (assoc :challenge-satisfied-pubkey (:pubkey e))
+                            (assoc :challenge-satisfied-nanos (System/nanoTime))
+                            (assoc :most-recent-failure-type nil)))
+                        :else
+                        (-> curr-auth-state
+                          (assoc :most-recent-failure-type :challenge-mismatch)))))]
+              (when most-recent-failure-type
+                (case most-recent-failure-type
+                  :challenge-mismatch
+                  (handle-auth-failure! metrics websocket-state ch-sess
+                    "auth-error:challenge didn't match")
+                  ;; else - unexpected atm:
+                  (handle-auth-failure! metrics websocket-state ch-sess
+                    "auth-error:")))))
+          ;; bad AUTH event didn't verify
+          (handle-auth-failure! metrics websocket-state ch-sess
+            (str "auth-error:auth event did not verify " verified-event-or-err-map))))
+      ;; bad AUTH arg was not a map
+      (handle-auth-failure! metrics websocket-state ch-sess
+        "auth-error:auth event did not provide an object"))))
+
 (defn- parse-raw-message*
   [raw-message]
   (try
@@ -530,27 +630,42 @@
   [^Conf conf metrics singleton-writeable-connection readonly-db
    singleton-writeable-connection-kv readonly-datasource-kv
    subs-atom fulfill-atom {:keys [uuid] :as websocket-state} ch-sess raw-message]
-  ;; note: have verified that exceptions from here are caught, logged, and swallowed
-  ;; by http-kit.
-  ;; First thing we do is parse any message on the wire - we expect every message
-  ;; to be in json format:
-  (let [parsed-message-or-exc (parse-raw-message* raw-message)]
-    (if (instance? Exception parsed-message-or-exc)
-      ;; If we fail to parse a websocket message, we handle it - we send a NOTICE
-      ;; message in response.
-      (handle-problem-message! metrics websocket-state ch-sess raw-message (str "Parse failure on: " raw-message))
-      (if (and (vector? parsed-message-or-exc) (not-empty parsed-message-or-exc))
-        (condp = (nth parsed-message-or-exc 0)
-          ;; These are the three types of message that nostr defines:
-          "EVENT" (receive-event conf metrics singleton-writeable-connection singleton-writeable-connection-kv subs-atom uuid websocket-state ch-sess parsed-message-or-exc raw-message)
-          "REQ" (receive-req conf metrics singleton-writeable-connection readonly-db singleton-writeable-connection-kv readonly-datasource-kv subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
-          "CLOSE" (receive-close metrics subs-atom fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
-          ;; If we do not recongize the message type, then we also do not process
-          ;; and send a NOTICE response.
-          (handle-problem-message! metrics websocket-state ch-sess raw-message (str "Unknown message type: " (nth parsed-message-or-exc 0))))
-        ;; If event parsed, but it was not a json array, we do not process it and
-        ;; send a NOTICE response.
-        (handle-problem-message! metrics websocket-state ch-sess raw-message (str "Expected a JSON array: " raw-message))))))
+  (try
+    (ws-registry/bytes-in! websocket-state (alength ^bytes (.getBytes raw-message)))
+    ;; First thing we do is parse any message on the wire - we expect every message
+    ;; to be in json format:
+    (let [parsed-message-or-exc (parse-raw-message* raw-message)]
+      (if (instance? Exception parsed-message-or-exc)
+        ;; If we fail to parse a websocket message, we handle it - we send a NOTICE
+        ;; message in response.
+        (handle-problem-message! metrics websocket-state ch-sess raw-message
+          (str "Parse failure on: " raw-message))
+        (if (and (vector? parsed-message-or-exc) (not-empty parsed-message-or-exc))
+          (condp = (nth parsed-message-or-exc 0)
+            ;; These are the three types of message that nostr defines:
+            "EVENT" (receive-event conf metrics singleton-writeable-connection
+                      singleton-writeable-connection-kv subs-atom uuid websocket-state
+                      ch-sess parsed-message-or-exc raw-message)
+            "REQ" (receive-req conf metrics singleton-writeable-connection readonly-db
+                    singleton-writeable-connection-kv readonly-datasource-kv subs-atom
+                    fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
+            "CLOSE" (receive-close metrics subs-atom fulfill-atom uuid websocket-state
+                      ch-sess parsed-message-or-exc)
+            "AUTH" (receive-auth conf metrics uuid websocket-state ch-sess parsed-message-or-exc)
+            ;; If we do not recongize the message type, then we also do not process
+            ;; and send a NOTICE response.
+            (handle-problem-message! metrics websocket-state ch-sess raw-message
+              (str "Unknown message type: " (nth parsed-message-or-exc 0))))
+          ;; If event parsed, but it was not a json array, we do not process it and
+          ;; send a NOTICE response.
+          (handle-problem-message! metrics websocket-state ch-sess raw-message
+            (str "Expected a JSON array: " raw-message)))))
+    (catch Throwable t
+      (log/error t "unexpected in ws-receive")
+      ;; note: have verified that exceptions from here are caught, logged, and swallowed
+      ;; by http-kit and the connection is closed *with* an error sent back to client
+      ;; websocket.
+      (throw t))))
 
 (defn- ws-open
   [metrics singleton-writeable-connection singleton-writeable-connection-kv websocket-connections-registry _subs-atom _fulfill-atom
@@ -576,11 +691,11 @@
 
 (defn- ws-close
   [metrics websocket-connections-registry subs-atom fulfill-atom
-   {:keys [uuid start-ns] :as websocket-state} _ch-sess _status]
+   {:keys [uuid] :as websocket-state} _ch-sess _status]
   (ws-registry/remove! websocket-connections-registry websocket-state)
   ;; Update our metrics to close the websocket, recording also the duration of the
   ;; channel's lifespan.
-  (metrics/websocket-close! metrics (util/nanos-to-millis (- (System/nanoTime) start-ns)))
+  (metrics/websocket-close! metrics websocket-state)
   ;; We'll want to ensure that all subscriptions and associated state for the
   ;; websocket channel (uuid) are cleaned up and removed.
   (metrics/time-unsubscribe-all! metrics
@@ -655,7 +770,7 @@
                       ;; because we assume we have a jackson-metrics-module
                       ;; registered with the jackson object mapper.
                       :body (metrics-porcelain/html metrics)}))
-        ;; todo - move these to /metrics and introduce /metrics-simple
+        ;; consider: moving these or subset to /metrics
         ;; -- /stats-jetty/not-ws --
         (jetty/create-simple-handler
           (jetty/uri-req-pred "/stats-jetty/not-ws")
@@ -676,11 +791,8 @@
   (jetty/create-jetty-websocket-creator
     {:on-create
      (fn [^JettyServerUpgradeRequest req ^JettyServerUpgradeResponse resp]
-       (let [created-state (ws-registry/->WebSocketConnectionState
-                             (str (UUID/randomUUID))
-                             (System/nanoTime)
-                             (jetty/upgrade-req->ip-address req)
-                             (AtomicInteger. 0))]
+       (let [created-state (ws-registry/init-ws-connection-state
+                             (jetty/upgrade-req->ip-address req))]
          (when (:websockets-disable-permessage-deflate? conf)
            ;; when deflate is disabled we save cpu at the network's expense
            ;; see https://github.com/eclipse/jetty.project/issues/1341
@@ -721,7 +833,11 @@
            (log/debug "enabling websockets batch mode" (:uuid created-state))
            (-> as-websocket-session
              .getRemote
-             (.setBatchMode BatchMode/ON)))))
+             (.setBatchMode BatchMode/ON)))
+         ;; for now we send auth challenge and let it exists for duration of cxn
+         ;; but future we may want to have it have an expiry
+         (when (:nip42-auth-enabled? conf)
+           (send-auth-challenge! conf metrics created-state as-websocket-session))))
      :on-error
      (fn [created-state _sess ^Throwable t]
        ;; onError here should mean the websocket gets closed -- may see this
@@ -739,6 +855,18 @@
        (ws-receive conf metrics singleton-writeable-connection readonly-db
          singleton-writeable-connection-kv readonly-datasource-kv
          subs-atom fulfill-atom created-state sess message))}))
+
+;; --
+
+(defn- init-db-cxns!
+  ^DatabaseCxns [^Conf conf metrics]
+  (let [datasources (store/init-new! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
+        datasources-kv (store/init-new-kv! (:sqlite-kv-file conf) ^MetricRegistry (:codahale-registry metrics))
+        {:keys [^DataSource writeable-datasource ^DataSource readonly-datasource]} datasources
+        {^DataSource writeable-datasource-kv :writeable-datasource
+         ^DataSource readonly-datasource-kv :readonly-datasource} datasources-kv]
+    (domain/->DatabaseCxns readonly-datasource writeable-datasource
+      readonly-datasource-kv writeable-datasource-kv)))
 
 ;; --
 
@@ -807,16 +935,14 @@
                   #(subscribe/num-firehose-filters subs-atom)
                   #(fulfill/num-active-fulfillments fulfill-atom)
                   #(write-thread/run-async!-backlog-size))
-        datasources (store/init-new! (:sqlite-file conf) ^MetricRegistry (:codahale-registry metrics))
-        datasources-kv (store/init-new-kv! (:sqlite-kv-file conf) ^MetricRegistry (:codahale-registry metrics))
-        {:keys [^DataSource writeable-datasource ^DataSource readonly-datasource]} datasources
-        {^DataSource writeable-datasource-kv :writeable-datasource
-         ^DataSource readonly-datasource-kv :readonly-datasource} datasources-kv
+        db-cxns (init-db-cxns! conf metrics)
         ;; we'll want a perptual single connection for writes which we must
-        ;; absolutely ensure we leverage from a single writer thread:
-        singleton-writeable-connection (.getConnection writeable-datasource)
-        singleton-writeable-connection-kv (.getConnection writeable-datasource-kv)
-        _ (vreset! readonly-db-holder readonly-datasource)]
+        ;; absolutely ensure we leverage from a single writer thread -- and
+        ;; we must keep perpetual singleton connection with our current strategy
+        ;; of enqueuing commits.
+        singleton-writeable-connection (.getConnection (:writeable-datasource db-cxns))
+        singleton-writeable-connection-kv (.getConnection (:writeable-kv-datasource db-cxns))
+        _ (vreset! readonly-db-holder (:readonly-datasource db-cxns))]
     (write-thread/schedule-sweep-job!
       metrics
       singleton-writeable-connection
@@ -829,16 +955,16 @@
         nip05-json
         nip11-json
         metrics
-        readonly-datasource
-        readonly-datasource-kv)
+        (:readonly-datasource db-cxns)
+        (:readonly-kv-datasource db-cxns))
       ws-handler-container
       (create-jetty-websocket-creator
         conf
         metrics
         singleton-writeable-connection
-        readonly-datasource
+        (:readonly-datasource db-cxns)
         singleton-writeable-connection-kv
-        readonly-datasource-kv
+        (:readonly-kv-datasource db-cxns)
         websocket-connections-registry
         subs-atom
         fulfill-atom)
