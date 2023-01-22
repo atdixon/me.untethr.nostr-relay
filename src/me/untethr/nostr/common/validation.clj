@@ -78,6 +78,11 @@
 
 (defn filter-err
   [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as the-filter}]
+  ;; in our current filter-err handling here we are preventing too-long filter
+  ;; values from making their way downstream into a built query. upstream from
+  ;; this check we happen to massage incoming filters in various ways and that
+  ;; is generally how we tolerate and allow some messy filters to still be
+  ;; accepted and work.
   (cond
     (not (every?* hex-str-64-or-prefix? ids)) :err/ids
     (not (every?* kind? kinds)) :err/kinds

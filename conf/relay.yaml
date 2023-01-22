@@ -12,7 +12,7 @@ sqlite:
 # This is optional. If not specified, the relay will store events of any numeric
 # kind. Otherwise, the relay will (quietly) not store events not whitelisted
 # here. Note: "6" doesn't seem in spec but damus etc send them as reposts.
-supported-kinds: ["0-5", "6", "7", "40-49", "10000-19999", "20000-29999"]
+supported-kinds: ["0-5", "6", "7", "40-49", "10000-19999", "20000-29999", "30000-40000"]
 
 # Optional. Don't want to serve reactions? ephemeral events or what-have-you?
 # Can disable here. We'll still store them per `supported-kinds` config option.

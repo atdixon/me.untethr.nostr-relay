@@ -385,14 +385,24 @@
   [req-id]
   (or req-id "<null>"))
 
+(def ^:private max-req-id-character-length 2000)
+
 (defn- receive-req
   "This function defines how we handle any requests that come on an open websocket
    channel. We expect these to be valid nip-01 defined requests, but we don't
    assume all requests are valid and handle invalid requests in relevant ways."
   [^Conf conf metrics db-cxns subs-atom fulfill-atom channel-id websocket-state
    ch-sess [_ req-id & req-filters]]
-  ;; todo max limit on filter values
-  (if-not (every? map? req-filters)
+  (cond
+    (> (count req-id) max-req-id-character-length)
+    (do
+      (log/warn "invalid req id length"
+        {:req-id (str (subs req-id 0 250) "...")})
+      (send!* websocket-state ch-sess
+        (create-notice-message "\"REQ\"/subscription id is too long")
+        true ;; flush?
+        'notice-req-id-too-long))
+    (not (every? map? req-filters))
     ;; Some filter in the request was not an object, so nothing we can do but
     ;; send back a NOTICE:
     (do
@@ -401,7 +411,8 @@
         (create-notice-message "\"REQ\" message had bad/non-object filter")
         true ;; flush?
         'notice-invalid-req))
-    ;; else -- our req has at least the basic expected form.
+    ;; else -- req looks good after basic checks
+    :else
     (let [use-req-filters (prepare-req-filters conf req-filters)
           ;; we've seen null subscription ids from clients in the wild, so we'll
           ;; begrudgingly support them by coercing to string here -- note that
