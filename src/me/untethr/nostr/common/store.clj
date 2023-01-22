@@ -23,22 +23,6 @@
   [^DataSource datasource]
   (P6DataSource. datasource))
 
-(defn- parse-pragma-statement
-  [pragma-statement]
-  (if-let [[_ pragma-name pragma-value]
-           (re-matches
-             #"^\s*pragma\s*(\S+)\s*=\s*([\w-']+)\s*;?\s*$" pragma-statement)]
-    [pragma-name pragma-value]
-    (throw (ex-info "couldn't parse" {:pragma-statement pragma-statement}))))
-
-(defn pragma-statements->query-string [pragma-statements]
-  (str/join "&"
-    (map (comp (partial str/join "=") parse-pragma-statement) pragma-statements)))
-
-(defn append-query-string
-  [jdbc-url query-str]
-  (str jdbc-url (if (str/includes? jdbc-url "?") "&" "?") query-str))
-
 (defn- create-readonly-hikari-datasource
   ^HikariDataSource [pool-name ro-sqlite-ds]
   (HikariDataSource.
@@ -71,7 +55,12 @@
       (.setMaximumPoolSize 10)
       ;; note: we leave .setMinimumIdle alone per docs recommendation.
       ;; Setting 0 here means no maximum lifetime to a connection in the pool.
-      (.setMaxLifetime 0)
+      ;; We go with 900000/15m for now. If there's any slow mem leak etc w/ native
+      ;; sqlite management or p6spy wrapper etc, we'll recycle connections
+      ;; infrequently to reset any of that.
+      ;; note that 30 seconds is min allowed lifetime here so we MUST set it
+      ;; above that
+      (.setMaxLifetime 900000) ;; 900000 = 15m
       ;; note: we will leave .setValidationTimeout as default. it must be
       ;; less than conn timeout. when HikariCP takes a connection from pool
       ;; this is how long it's allowed to validate it before returning it
@@ -93,7 +82,15 @@
       (.setIdleTimeout 0)
       (.setKeepaliveTime (* 5 60 1000))
       (.setMaximumPoolSize 1) ;; really consider if changing this from 1.
-      (.setMaxLifetime 0)
+      ;; with our singleton write strategy where we take a connection and
+      ;; never return it to the pool we would never see this max lifetime
+      ;; take effect. however we'll ensure in our write thread management
+      ;; that we return connection to the pool **crucially after ensuring
+      ;; we commit outstanding work on the singleton thread** so that we
+      ;; reset recycle cxns (see note above)
+      ;; note that 30 seconds is min allowed lifetime here so we MUST set it
+      ;; above that
+      (.setMaxLifetime 900000) ;; 900000 = 15m
       ;; disable leak detection entirely - as we may take out connection
       ;; for writes forever.
       (.setLeakDetectionThreshold 0 #_zero!!!))))
@@ -506,12 +503,12 @@
 (def ^:private max-tags-per-type 3000) ;; for now just simply quietly crop after 5000
 
 (defn- internal-execute-continuation!
-  [db
+  [db-cxn
    {:keys [obo-row-id
            p-tags-insert-batch
            e-tags-insert-batch
            x-tags-insert-batch] :as _prev-continuation}]
-  (jdbc/with-transaction [tx db]
+  (jdbc/with-transaction [tx db-cxn]
     (let [e-tag-insert-prepared (insert-e-tag-new-schema-prepared-stmt tx)
           p-tag-insert-prepared (insert-p-tag-new-schema-prepared-stmt tx)
           x-tag-insert-prepared (insert-x-tag-new-schema-prepared-stmt tx)]
@@ -605,6 +602,6 @@
      :duplicate)))
 
 (defn continuation!
-  [writeable-conn _writeable-conn-kv continuation]
-  (let [tx writeable-conn]
+  [writeable-cxn _writeable-kv-cxn continuation]
+  (let [tx writeable-cxn]
     (internal-execute-continuation! tx continuation)))

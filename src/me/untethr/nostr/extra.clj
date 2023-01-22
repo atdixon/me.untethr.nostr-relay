@@ -72,8 +72,10 @@
        -XGET <your-relay-host>/q \\
        --data '[{\"authors\":[\"<pubkey>\"]}]'
    "
-  [^Conf conf readonly-db readonly-db-kv prepare-req-filters-fn req-query-params req-body]
-  (let [overall-start-nanos (System/nanoTime)
+  [^Conf conf db-cxns prepare-req-filters-fn req-query-params req-body]
+  (let [{readonly-db :readonly-datasource
+         readonly-db-kv :readonly-kv-datasource} db-cxns
+        overall-start-nanos (System/nanoTime)
         query-params-as-filter (some-> req-query-params query-params->filter)
         body-as-filters (some->> req-body not-empty json-facade/parse)
         use-filters (or (some-> query-params-as-filter vector) body-as-filters [{}])

@@ -1,7 +1,9 @@
 (ns test.app-test
   (:require
     [clojure.test :refer :all]
+    [clojure.tools.logging :as log]
     [me.untethr.nostr.app :as app]
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.conf :as conf]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.query.engine :as engine]
@@ -112,8 +114,7 @@
                        (#'app/receive-event
                          %1
                          ::stub-metrics
-                         ::stub-db
-                         ::stub-db-kv
+                         ::stub-db-cxns
                          ::stub-subs-atom
                          ::stub-channel-id
                          ::stub-websocket-state
@@ -167,15 +168,14 @@
                       (jdbc/execute-one! db-kv
                         ["select raw_event from n_kv_events where event_id = ?" event-id]
                         {:builder-fn rs/as-unqualified-lower-maps})))]
-    (support/with-memory-db-kv-schema [db-kv]
-      (support/with-memory-db-new-schema [db]
+    (support/with-memory-db-kv-schema [db-kv-cxn]
+      (support/with-memory-db-new-schema [db-cxn]
         (let [invoke-sut! #(do
                              (reset! result-atom [])
                              (#'app/receive-accepted-event!
                                ::stub-conf
                                fake-metrics
-                               db
-                               db-kv
+                               ::stub-db-cxns
                                ::stub-subs-atom
                                ::stub-channel-id
                                ::stub-websocket-state
@@ -184,9 +184,11 @@
                                ::stub-raw-message)
                              @result-atom)]
           (with-redefs [;; for our test we need run-async to actually be a blocking sync:
-                        write-thread/run-async! (fn [_metrics db-conn db-kv-conn task-fn success-fn failure-fn]
+                        write-thread/run-async! (fn [_metrics db-cxns task-fn success-fn failure-fn]
                                                   (let [res (try
-                                                              (task-fn db-conn db-kv-conn)
+                                                              (task-fn
+                                                                db-cxn
+                                                                db-kv-cxn)
                                                               (catch Throwable t
                                                                 t))]
                                                     (if (instance? Throwable res)
@@ -211,7 +213,7 @@
             ;; with same id but different payloads as at least one would not
             ;; verify.
             (is (= [{:event_id "10" :pubkey "pk0"}]
-                  (mapv #(select-keys % [:event_id :pubkey]) (q* db))))
+                  (mapv #(select-keys % [:event_id :pubkey]) (q* db-cxn))))
             (let [make-id (partial format "time-%s:kind-%s")]
               (doseq [replaceable-kind [19999 10000]]
                 (let [created-at 10
@@ -230,32 +232,32 @@
                   (is (#'app/replaceable-event? event-obj))
                   (is (= [:stored* :notified] (invoke-sut! event-obj)))))
               (doseq [[idx replaceable-kind] (map-indexed vector [19999 10000])]
-                (is (nil? (q* db (make-id 10 idx replaceable-kind))))
-                (is (nil? (q* db (make-id 15 idx replaceable-kind))))
+                (is (nil? (q* db-cxn (make-id 10 idx replaceable-kind))))
+                (is (nil? (q* db-cxn (make-id 15 idx replaceable-kind))))
                 ;; the latest one is the not deleted one:
                 (is (= {:pubkey "pk0" :created_at 20}
                       (->
-                        (q* db (make-id 20 replaceable-kind))
+                        (q* db-cxn (make-id 20 replaceable-kind))
                         (select-keys [:pubkey :created_at])))))
               ;; last check over all data written by this test -- we're passing
               ;; through a lot of integrative pieces here:
               (let [q (engine/active-filters->query [(engine/init-active-filter {})])]
                 (is (= [(make-id 20 10000) (make-id 20 19999) "10"]
-                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv) :event_id)
-                        (jdbc/execute! db q
+                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv-cxn) :event_id)
+                        (jdbc/execute! db-cxn q
                           {:builder-fn rs/as-unqualified-lower-maps})))))
               (let [q (engine/active-filters->query [(engine/init-active-filter {:#p ["pkX"]})])]
                 (is (= [(make-id 20 10000) (make-id 20 19999)]
-                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv) :event_id)
-                        (jdbc/execute! db q
+                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv-cxn) :event_id)
+                        (jdbc/execute! db-cxn q
                           {:builder-fn rs/as-unqualified-lower-maps})))))
               (let [q (engine/active-filters->query [(engine/init-active-filter {:#z ["booya"]})])]
                 (is (= []
-                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv) :event_id)
-                        (jdbc/execute! db q
+                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv-cxn) :event_id)
+                        (jdbc/execute! db-cxn q
                           {:builder-fn rs/as-unqualified-lower-maps})))))
               (let [q (engine/active-filters->query [(engine/init-active-filter {:#z ["smasha"]})])]
                 (is (= [(make-id 20 10000) (make-id 20 19999)]
-                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv) :event_id)
-                        (jdbc/execute! db q
+                      (mapv (comp :id #'app/parse (partial lookup-kv db-kv-cxn) :event_id)
+                        (jdbc/execute! db-cxn q
                           {:builder-fn rs/as-unqualified-lower-maps}))))))))))))

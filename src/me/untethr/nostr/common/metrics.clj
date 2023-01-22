@@ -1,5 +1,6 @@
 (ns me.untethr.nostr.common.metrics
   (:require
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.ws-registry :as ws-registry]
     [me.untethr.nostr.util :as util]
     [metrics.core :as metrics-core :refer [new-registry]]
@@ -154,18 +155,19 @@
                       (- (System/nanoTime) (:start-ns websocket-state)))]
     (dec! (:websocket-counter metrics))
     (update! (:websocket-lifetime-secs metrics) (long (/ duration-ms 1000)))
-    (let [total-bytes-in (.getCount ^Meter (:bytes-in websocket-state))
-          total-bytes-out (.getCount ^Meter (:bytes-out websocket-state))]
-      ;; we want any last bytes sent or received to get noted in our peak rates:
-      (ws-registry/update-peak-1m-rates! websocket-state)
-      (when (<= duration-ms 60000)
-        ;; for websockets that didn't last a full minute we'll update w/ total bytes
-        (ws-registry/update-peak-1m-rate-bytes-in! websocket-state total-bytes-in)
-        (ws-registry/update-peak-1m-rate-bytes-out! websocket-state total-bytes-out))
-      (update! (:websocket-total-bytes-in metrics) total-bytes-in)
-      (update! (:websocket-total-bytes-out metrics) total-bytes-out)
-      (update! (:websocket-peak-1m-bytes-in metrics) @(:peak-1m-rate-bytes-in-atom websocket-state))
-      (update! (:websocket-peak-1m-bytes-out metrics) @(:peak-1m-rate-bytes-out-atom websocket-state)))))
+    (when domain/track-bytes-in-out?
+      (let [total-bytes-in (.getCount ^Meter (:bytes-in websocket-state))
+            total-bytes-out (.getCount ^Meter (:bytes-out websocket-state))]
+        ;; we want any last bytes sent or received to get noted in our peak rates:
+        (ws-registry/update-peak-1m-rates! websocket-state)
+        (when (<= duration-ms 60000)
+          ;; for websockets that didn't last a full minute we'll update w/ total bytes
+          (ws-registry/update-peak-1m-rate-bytes-in! websocket-state total-bytes-in)
+          (ws-registry/update-peak-1m-rate-bytes-out! websocket-state total-bytes-out))
+        (update! (:websocket-total-bytes-in metrics) total-bytes-in)
+        (update! (:websocket-total-bytes-out metrics) total-bytes-out)
+        (update! (:websocket-peak-1m-bytes-in metrics) @(:peak-1m-rate-bytes-in-atom websocket-state))
+        (update! (:websocket-peak-1m-bytes-out metrics) @(:peak-1m-rate-bytes-out-atom websocket-state))))))
 
 (defn duplicate-event!
   [metrics]

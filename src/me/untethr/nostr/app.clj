@@ -26,7 +26,6 @@
            (java.nio.channels ClosedChannelException WritePendingException)
            (java.nio.charset StandardCharsets)
            (java.security SecureRandom)
-           (java.util UUID)
            (java.io File)
            (java.util.concurrent.atomic AtomicInteger)
            (javax.sql DataSource)
@@ -118,7 +117,8 @@
        (try
          (jetty/send! ch-sess data
            (fn [] ;; success
-             (ws-registry/bytes-out! websocket-state (alength ^bytes (.getBytes data)))
+             (when domain/track-bytes-in-out?
+               (ws-registry/bytes-out! websocket-state (alength ^bytes (.getBytes data))))
              (update-outgoing-messages! websocket-state :dec))
            (fn [^Throwable t]
              (update-outgoing-messages! websocket-state :dec)
@@ -267,8 +267,7 @@
   (some-> event-obj :kind (#(<= 20000 % (dec 30000)))))
 
 (defn- receive-accepted-event!
-  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv
-   subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
+  [^Conf conf metrics db-cxns subs-atom channel-id websocket-state ch-sess event-obj _raw-message]
   (let [verified-event-or-err-map (metrics/time-verify! metrics (as-verified-event event-obj))]
     (if (identical? verified-event-or-err-map event-obj)
       ;; For now, we re-render the raw event into json; we could be faster by
@@ -295,8 +294,7 @@
           ;; replaceable event that has already been replaced, and we'll bear that cross)
           (write-thread/submit-new-event!
             metrics
-            singleton-writeable-connection
-            singleton-writeable-connection-kv
+            db-cxns
             channel-id
             verified-event-or-err-map
             raw-event
@@ -316,8 +314,7 @@
       (handle-invalid-event! metrics websocket-state ch-sess event-obj verified-event-or-err-map))))
 
 (defn- receive-event
-  [^Conf conf metrics singleton-writeable-connection singleton-writeable-connection-kv
-   subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
+  [^Conf conf metrics db-cxns subs-atom channel-id websocket-state ch-sess [_ e] raw-message]
   ;; Before we attempt to validate an event and its signature (which costs us
   ;; some compute), we'll determine if we're destined to reject the event anyway.
   ;; These are generally rules from configuration - for example, if the event
@@ -325,8 +322,8 @@
   ;; reject it without trying to validate it.
   (if-let [rejection-reason (reject-event-before-verify? conf e)]
     (handle-rejected-event! metrics websocket-state ch-sess e raw-message rejection-reason)
-    (receive-accepted-event! ^Conf conf metrics singleton-writeable-connection
-      singleton-writeable-connection-kv subs-atom channel-id websocket-state ch-sess e raw-message)))
+    (receive-accepted-event! ^Conf conf metrics db-cxns subs-atom channel-id
+      websocket-state ch-sess e raw-message)))
 
 (def max-filters 20)
 
@@ -392,9 +389,8 @@
   "This function defines how we handle any requests that come on an open websocket
    channel. We expect these to be valid nip-01 defined requests, but we don't
    assume all requests are valid and handle invalid requests in relevant ways."
-  [^Conf conf metrics _singleton-writeable-connection readonly-db
-   _singleton-writeable-connection-kv readonly-datasource-kv
-   subs-atom fulfill-atom channel-id websocket-state ch-sess [_ req-id & req-filters]]
+  [^Conf conf metrics db-cxns subs-atom fulfill-atom channel-id websocket-state
+   ch-sess [_ req-id & req-filters]]
   ;; todo max limit on filter values
   (if-not (every? map? req-filters)
     ;; Some filter in the request was not an object, so nothing we can do but
@@ -468,7 +464,8 @@
                   ;; some few number of messages in which case we may double-deliver
                   ;; an event or few from both fulfillment and realtime notifications,
                   ;; but, crucially, we will never miss an event:
-                  (let [table-max-ids (domain/->TableMaxRowIds
+                  (let [readonly-db (:readonly-datasource db-cxns)
+                        table-max-ids (domain/->TableMaxRowIds
                                         ;; consider: are these disk seeks? or generally cached?
                                         ;;  we could consider only producing the ids needed for the
                                         ;;  given query filter/s we have.
@@ -499,11 +496,11 @@
                         ;; any other REQ or other event from the client -- and we're not going
                         ;; into fulfillment queues.
                         (fulfill/synchronous!!
-                          metrics readonly-db readonly-datasource-kv channel-id
+                          metrics db-cxns channel-id
                           internal-req-id use-req-filters table-max-ids
                           fulfillment-observer fulfillment-eose-callback)
                         (fulfill/submit-use-batching!
-                          metrics readonly-db readonly-datasource-kv fulfill-atom channel-id
+                          metrics db-cxns fulfill-atom channel-id
                           internal-req-id use-req-filters table-max-ids
                           fulfillment-observer fulfillment-eose-callback)))))))))))))
 
@@ -627,11 +624,11 @@
     'notice-problem-message))
 
 (defn- ws-receive
-  [^Conf conf metrics singleton-writeable-connection readonly-db
-   singleton-writeable-connection-kv readonly-datasource-kv
-   subs-atom fulfill-atom {:keys [uuid] :as websocket-state} ch-sess raw-message]
+  [^Conf conf metrics db-cxns subs-atom fulfill-atom
+   {:keys [uuid] :as websocket-state} ch-sess raw-message]
   (try
-    (ws-registry/bytes-in! websocket-state (alength ^bytes (.getBytes raw-message)))
+    (when domain/track-bytes-in-out?
+      (ws-registry/bytes-in! websocket-state (alength ^bytes (.getBytes raw-message))))
     ;; First thing we do is parse any message on the wire - we expect every message
     ;; to be in json format:
     (let [parsed-message-or-exc (parse-raw-message* raw-message)]
@@ -643,12 +640,10 @@
         (if (and (vector? parsed-message-or-exc) (not-empty parsed-message-or-exc))
           (condp = (nth parsed-message-or-exc 0)
             ;; These are the three types of message that nostr defines:
-            "EVENT" (receive-event conf metrics singleton-writeable-connection
-                      singleton-writeable-connection-kv subs-atom uuid websocket-state
+            "EVENT" (receive-event conf metrics db-cxns subs-atom uuid websocket-state
                       ch-sess parsed-message-or-exc raw-message)
-            "REQ" (receive-req conf metrics singleton-writeable-connection readonly-db
-                    singleton-writeable-connection-kv readonly-datasource-kv subs-atom
-                    fulfill-atom uuid websocket-state ch-sess parsed-message-or-exc)
+            "REQ" (receive-req conf metrics db-cxns subs-atom fulfill-atom uuid
+                    websocket-state ch-sess parsed-message-or-exc)
             "CLOSE" (receive-close metrics subs-atom fulfill-atom uuid websocket-state
                       ch-sess parsed-message-or-exc)
             "AUTH" (receive-auth conf metrics uuid websocket-state ch-sess parsed-message-or-exc)
@@ -668,7 +663,7 @@
       (throw t))))
 
 (defn- ws-open
-  [metrics singleton-writeable-connection singleton-writeable-connection-kv websocket-connections-registry _subs-atom _fulfill-atom
+  [metrics db-cxns websocket-connections-registry _subs-atom _fulfill-atom
    {:keys [uuid ip-address] :as websocket-state}]
   (ws-registry/add! websocket-connections-registry websocket-state)
   ;; We keep track of created channels and the ip address that created the channel
@@ -678,11 +673,10 @@
   ;; sqlite3 using WAL-mode:
   (write-thread/run-async!
     metrics
-    singleton-writeable-connection
-    singleton-writeable-connection-kv
-    (fn [singleton-writeable-connection _singleton-writeable-connection-kv]
+    db-cxns
+    (fn [db-cxn _db-kv-cxn]
       (metrics/time-insert-channel! metrics
-        (store/insert-channel! singleton-writeable-connection uuid ip-address)))
+        (store/insert-channel! db-cxn uuid ip-address)))
     (fn [_] (log/debug "inserted channel" (:uuid websocket-state)))
     (fn [^Throwable t] (log/error t "while inserting new channel" (:uuid websocket-state))))
   ;; Without waiting fo the db write to occur, we can update our metrics and
@@ -713,8 +707,7 @@
                       nip05-json
                       nip11-json
                       metrics
-                      readonly-datasource
-                      readonly-datasource-kv]
+                      db-cxns]
   (doto non-ws-handler
     (.setHandler
       (jetty/create-handler-list
@@ -750,7 +743,7 @@
           (fn [^HttpServletRequest req]
             {:status 200
              :content-type "text/plain"
-             :body (extra/execute-q conf readonly-datasource readonly-datasource-kv prepare-req-filters
+             :body (extra/execute-q conf db-cxns prepare-req-filters
                      (jetty/->query-params req)
                      (jetty/->body-str req))}))
         ;; -- /metrics --
@@ -785,9 +778,8 @@
                       :body (.toStatsHTML ws-handler)}))))))
 
 (defn- create-jetty-websocket-creator
-  ^JettyWebSocketCreator [^Conf conf metrics singleton-writeable-connection readonly-db
-                          singleton-writeable-connection-kv readonly-datasource-kv
-                          websocket-connections-registry subs-atom fulfill-atom]
+  ^JettyWebSocketCreator [^Conf conf metrics db-cxns websocket-connections-registry
+                          subs-atom fulfill-atom]
   (jetty/create-jetty-websocket-creator
     {:on-create
      (fn [^JettyServerUpgradeRequest req ^JettyServerUpgradeResponse resp]
@@ -801,7 +793,7 @@
              (filter #(not= "permessage-deflate"
                         (.getName ^ExtensionConfig %)) (.getExtensions req))))
          (log/debug 'ws-open (:uuid created-state) (:ip-address created-state))
-         (ws-open metrics singleton-writeable-connection singleton-writeable-connection-kv websocket-connections-registry subs-atom fulfill-atom created-state)
+         (ws-open metrics db-cxns websocket-connections-registry subs-atom fulfill-atom created-state)
          created-state))
      :on-connect
      (fn [created-state sess]
@@ -852,9 +844,8 @@
        (ws-close metrics websocket-connections-registry subs-atom fulfill-atom created-state sess status-code))
      :on-text-message
      (fn [created-state sess message]
-       (ws-receive conf metrics singleton-writeable-connection readonly-db
-         singleton-writeable-connection-kv readonly-datasource-kv
-         subs-atom fulfill-atom created-state sess message))}))
+       (ws-receive conf metrics db-cxns subs-atom fulfill-atom created-state
+         sess message))}))
 
 ;; --
 
@@ -865,7 +856,7 @@
         {:keys [^DataSource writeable-datasource ^DataSource readonly-datasource]} datasources
         {^DataSource writeable-datasource-kv :writeable-datasource
          ^DataSource readonly-datasource-kv :readonly-datasource} datasources-kv]
-    (domain/->DatabaseCxns readonly-datasource writeable-datasource
+    (domain/init-database-cxns readonly-datasource writeable-datasource
       readonly-datasource-kv writeable-datasource-kv)))
 
 ;; --
@@ -939,14 +930,14 @@
         ;; we'll want a perptual single connection for writes which we must
         ;; absolutely ensure we leverage from a single writer thread -- and
         ;; we must keep perpetual singleton connection with our current strategy
-        ;; of enqueuing commits.
-        singleton-writeable-connection (.getConnection (:writeable-datasource db-cxns))
-        singleton-writeable-connection-kv (.getConnection (:writeable-kv-datasource db-cxns))
+        ;; of enqueuing commits. HOWEVER we won't take the connection out here,
+        ;; we will still give the write-thread the singleton pool data source.
+        ;; this way the write thread can commit close and reopen connections at
+        ;; strategic moments in order to ensure we don't accumulate any slow
+        ;; off-heap memory that might grow with very long-lived connections
         _ (vreset! readonly-db-holder (:readonly-datasource db-cxns))]
-    (write-thread/schedule-sweep-job!
-      metrics
-      singleton-writeable-connection
-      singleton-writeable-connection-kv)
+    (write-thread/schedule-sweep-job! metrics db-cxns)
+    (write-thread/schedule-connection-recycle! metrics db-cxns)
     (jetty/start-server!
       (populate-non-ws-handler!
         non-ws-handler-container
@@ -955,16 +946,12 @@
         nip05-json
         nip11-json
         metrics
-        (:readonly-datasource db-cxns)
-        (:readonly-kv-datasource db-cxns))
+        db-cxns)
       ws-handler-container
       (create-jetty-websocket-creator
         conf
         metrics
-        singleton-writeable-connection
-        (:readonly-datasource db-cxns)
-        singleton-writeable-connection-kv
-        (:readonly-kv-datasource db-cxns)
+        db-cxns
         websocket-connections-registry
         subs-atom
         fulfill-atom)

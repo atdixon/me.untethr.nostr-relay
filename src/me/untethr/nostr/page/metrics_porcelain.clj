@@ -1,6 +1,7 @@
 (ns me.untethr.nostr.page.metrics-porcelain
   (:require
     [hiccup.core :refer :all :exclude [html]]
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.metrics])
   (:import (com.codahale.metrics Counter Gauge Histogram Meter MetricFilter MetricRegistry Snapshot Timer)
            (com.codahale.metrics.jvm MemoryUsageGaugeSet)))
@@ -124,16 +125,17 @@
       [:div [:span "Among "
              [:b (count-of metrics :websocket-lifetime-secs)] " websocket channels"
              ", lifespan is " (histo-summary-as-markup metrics :websocket-lifetime-secs)
-             " seconds"
-             [:br]
-             "Total bytes out*: " (histo-summary-as-markup metrics :websocket-total-bytes-out get-maxth) "."
-             " Total bytes in*: " (histo-summary-as-markup metrics :websocket-total-bytes-in get-maxth) "."
-             [:br]
-             "Peak 1m bytes out*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-out get-maxth) "."
-             " Peak 1m bytes in*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-in get-maxth) "."
-             [:br]
-             "(*Top percentile is max.)"
-             ]]
+             " seconds"]]
+      (when domain/track-bytes-in-out?
+        [:div
+         [:br]
+         "Total bytes out*: " (histo-summary-as-markup metrics :websocket-total-bytes-out get-maxth) "."
+         " Total bytes in*: " (histo-summary-as-markup metrics :websocket-total-bytes-in get-maxth) "."
+         [:br]
+         "Peak 1m bytes out*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-out get-maxth) "."
+         " Peak 1m bytes in*: " (histo-summary-as-markup metrics :websocket-peak-1m-bytes-in get-maxth) "."
+         [:br]
+         "(*Top percentile is max.)"])
       [:h3 "Fulfillment"]
       [:div (value-of metrics :active-fullfillments) " active fulfillments; "
        (count-of metrics :fulfillment-active-threads-counter) " threads working at them."]
@@ -170,7 +172,8 @@
       [:div "Stored (or replaced): " (count-of metrics :stored-event)
        " (rate = " (meter-summary-as-markup metrics :stored-event) ")"]
       [:div "Continuation: " (count-of metrics :exec-continuation-timer)]
-      [:div "Purged: " (count-of metrics :db-purge-deleted-timer) " (" (histo-summary-as-markup metrics :db-sweep-limit) " at a time)"]
+      [:div "Purged: " (count-of metrics :db-purge-deleted-timer) " ("
+       (histo-summary-as-markup metrics :db-sweep-limit) " at a time)"]
       [:div "Duplicate: " (count-of metrics :duplicate-event)
        " (rate = " (meter-summary-as-markup metrics :duplicate-event) ")"]
       [:div "Rejected: " (count-of metrics :rejected-event)

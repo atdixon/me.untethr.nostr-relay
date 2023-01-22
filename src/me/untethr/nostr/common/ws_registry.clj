@@ -1,4 +1,5 @@
 (ns me.untethr.nostr.common.ws-registry
+  (:require [me.untethr.nostr.common.domain :as domain])
   (:import (com.codahale.metrics Meter)
            (com.google.common.cache Cache CacheBuilder)
            (java.util UUID)
@@ -39,8 +40,8 @@
     ip-addr
     (atom (create-auth-challenge-state))
     (AtomicInteger. 0)
-    (Meter.)
-    (Meter.)
+    (when domain/track-bytes-in-out?  (Meter.))
+    (when domain/track-bytes-in-out?  (Meter.))
     (atom -1.0)
     (atom -1.0)))
 

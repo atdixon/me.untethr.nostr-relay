@@ -82,6 +82,12 @@
     </logger>
     -->
 
+    <!--
+    <logger name="com.zaxxer.hikari.pool" level="DEBUG">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+    -->
+
     <logger name="p6spy" additivity="false" level="INFO">
         <appender-ref ref="FILE_P6SPY" />
     </logger>

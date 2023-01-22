@@ -1,5 +1,6 @@
 (ns test.support
   (:require [clojure.test :refer :all]
+            [clojure.tools.logging :as log]
             [next.jdbc :as jdbc]
             [me.untethr.nostr.common.store :as store]
             [me.untethr.nostr.app :as app]
@@ -30,6 +31,11 @@
   [bindings & body]
   `(let [parsed-schema# (store/parse-schema "schema-new.sql")
          ds# (store/create-sqlite-datasource ":memory:" parsed-schema#)]
+     ;; big note: when using :memory:, must use singleton connection
+     ;;  for everything - once connection closes db bye-bye
+     ;;  (so, i.e., if you run operations through datasource, things will
+     ;;    quietly work but next connection will not see ddl or inserts from
+     ;;    priors)
      (with-open [db# (jdbc/get-connection ds#)]
        (store/apply-ddl-statements! db# parsed-schema#)
        (let [~bindings [db#]]
@@ -39,6 +45,11 @@
   [bindings & body]
   `(let [parsed-schema# (store/parse-schema "schema-kv.sql")
          ds# (store/create-sqlite-datasource ":memory:" parsed-schema#)]
+     ;; big note: when using :memory:, must use singleton connection
+     ;;  for everything - once connection closes db bye-bye
+     ;;  (so, i.e., if you run operations through datasource, things will
+     ;;    quietly work but next connection will not see ddl or inserts from
+     ;;    priors)
      (with-open [db# (jdbc/get-connection ds#)]
        (store/apply-ddl-statements! db# parsed-schema#)
        (let [~bindings [db#]]

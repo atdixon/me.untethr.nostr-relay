@@ -2,6 +2,7 @@
   (:require
     [clojure.string :as str]
     [clojure.test :refer :all]
+    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.query :as query]
@@ -168,15 +169,19 @@
 
 (deftest many-followers-regression-test
   (support/with-regression-data [data-vec]
-    (support/with-memory-db-new-schema [db]
-      (support/with-memory-db-kv-schema [db-kv]
-        (let [fake-metrics (metrics/create-metrics)
-              [_ event-obj] (json-facade/parse (nth data-vec 4))
-              latch (CountDownLatch. 1)
-              _ (write-thread/submit-new-event!
-                  fake-metrics db db-kv "chan0" event-obj "<raw...>"
-                  (fn [])
-                  (fn [])
-                  (fn [] (.countDown latch)))]
-          (is (time
-                (.await latch 20000 TimeUnit/MILLISECONDS))))))))
+    (support/with-memory-db-new-schema [db-cxn]
+      (support/with-memory-db-kv-schema [db-kv-cxn]
+        (with-redefs [write-thread/get-singleton-connection! (constantly db-cxn)
+                      write-thread/get-singleton-kv-connection! (constantly db-kv-cxn)]
+          (let [fake-metrics (metrics/create-metrics)
+                [_ event-obj] (json-facade/parse (nth data-vec 4))
+                latch (CountDownLatch. 1)
+                _ (write-thread/submit-new-event!
+                    fake-metrics
+                    ::stub-db-cxns
+                    "chan0" event-obj "<raw...>"
+                    (fn [])
+                    (fn [])
+                    (fn [] (.countDown latch)))]
+            (is (time
+                  (.await latch 20000 TimeUnit/MILLISECONDS)))))))))
