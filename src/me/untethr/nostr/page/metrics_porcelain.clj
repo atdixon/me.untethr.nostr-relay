@@ -165,6 +165,8 @@
       [:div "Notify: " (histo-summary-as-markup metrics :notify-event-timer) " ms"
        " (" (histo-summary-as-markup metrics :notify-num-candidates) " filter candidates)"]
       [:div "Store: " (histo-summary-as-markup metrics :store-event-timer) " ms"]
+      [:div "Commit: " (histo-summary-as-markup metrics :commit-timer) " ms"]
+      [:div "Commit (kv): " (histo-summary-as-markup metrics :commit-kv-timer) " ms"]
       [:div "Continuation: " (histo-summary-as-markup metrics :exec-continuation-timer) " ms"]
       [:div "Purged: " (histo-summary-as-markup metrics :db-purge-deleted-timer) " ms"]
       [:br]

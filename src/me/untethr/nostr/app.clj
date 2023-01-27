@@ -4,7 +4,7 @@
     [clojure.tools.logging :as log]
     [me.untethr.nostr.common :as common]
     [me.untethr.nostr.conf :as conf]
-    [me.untethr.nostr.crypt :as crypt]
+    [me.untethr.nostr.crypt.crypt :as crypt]
     [me.untethr.nostr.extra :as extra]
     [me.untethr.nostr.fulfill :as fulfill]
     [me.untethr.nostr.page.home :as page-home]

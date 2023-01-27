@@ -1,5 +1,6 @@
 (ns me.untethr.nostr.common
-  (:require [clojure.set :as set]))
+  (:require [clojure.set :as set]
+            [clojure.tools.logging :as log]))
 
 (defn indexable-tag-str?*
   [^String s]
@@ -16,3 +17,24 @@
 
 (def allow-filter-tag-queries-sans-e-and-p-set
   (set/difference allowed-filter-tag-queries-set #{:#e :#p}))
+
+
+(defn wrap-runnable-handle-uncaught-exc
+  ^Runnable [context ^Runnable f & {:keys [rethrow?] :or {rethrow? false}}]
+  (fn []
+    (try
+      (.run f)
+      (catch Throwable t
+        (log/error t "uncaught exception" {:context context})
+        (when rethrow?
+          (throw t))))))
+
+(defn wrap-callable-handle-uncaught-exc
+  ^Callable [context ^Callable c & {:keys [rethrow?] :or {rethrow? false}}]
+  (fn []
+    (try
+      (.call c)
+      (catch Throwable t
+        (log/error t "uncaught exception" {:context context})
+        (when rethrow?
+          (throw t))))))

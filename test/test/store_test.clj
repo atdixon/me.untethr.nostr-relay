@@ -90,6 +90,7 @@
     (jdbc/execute! db
       (engine/filter->query f
         :endcap-row-id Integer/MAX_VALUE
+        :endcap-created-at Long/MAX_VALUE
         :override-limit Integer/MAX_VALUE))))
 
 (deftest simple-delete-test
@@ -171,6 +172,7 @@
   (support/with-regression-data [data-vec]
     (support/with-memory-db-new-schema [db-cxn]
       (support/with-memory-db-kv-schema [db-kv-cxn]
+        ;; ...asumme we have auto-commit=true for our test/memory cxns
         (with-redefs [write-thread/get-singleton-connection! (constantly db-cxn)
                       write-thread/get-singleton-kv-connection! (constantly db-kv-cxn)]
           (let [fake-metrics (metrics/create-metrics)
@@ -180,8 +182,19 @@
                     fake-metrics
                     ::stub-db-cxns
                     "chan0" event-obj "<raw...>"
+                    ;; duplicate event callback
                     (fn [])
+                    ;; stored-or-replace callback:
                     (fn [])
+                    ;; finale callback:
                     (fn [] (.countDown latch)))]
-            (is (time
-                  (.await latch 20000 TimeUnit/MILLISECONDS)))))))))
+            (is
+              (time
+                (.await latch 20000 TimeUnit/MILLISECONDS)))
+            (let [result-event-ids
+                  (map :event_id
+                    (engine/execute-active-filters db-cxn
+                      [(engine/init-active-filter
+                         {:#p ["08e48b610cf0d0343c582ad56a23277f13ab9c8d3626c7fe17e323f50fa2b86a"]})]))]
+              (is (= ["0952a6326b529b5b6ff66d3778e68f40d4793bdb5b474eaf70e54c8f3d9a22f3"]
+                    result-event-ids)))))))))

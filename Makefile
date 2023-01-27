@@ -6,6 +6,10 @@ clean:
 test:
 	clj -X:test
 
+.PHONE: test-store-only
+test-store-only:
+	clj -X:test :nses ["test.store-test"]
+
 .PHONY: dependency-sources
 dependency-sources:
 	clj -X:deps mvn-pom

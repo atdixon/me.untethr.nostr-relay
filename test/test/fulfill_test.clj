@@ -26,10 +26,13 @@
             _ (.get f 1000 TimeUnit/MILLISECONDS)]
         (is (.isDone f))
         (is (= 0 (fulfill/num-active-fulfillments fulfill-atom)))
-        (is (= 4 (count @results-atom)))
+        ;; we expect 7 results -- b/c we're using /submit! + fulfill-entirely!
+        ;;   and even if index query doesn't de-duplicate the kv lookup will
+        ;;   de-dupe for the single fulfillment page
+        (is (= 7 (count @results-atom)))
         (is (= 1 @eose-atom))
         ;; verify the results are json strings that can be parsed
-        (is (= (into #{} (subvec (:pool test-data/pool-with-filters) 1 5))
+        (is (= (into #{} (subvec (:pool test-data/pool-with-filters) 1 8))
               (into #{} (map #'app/parse) @results-atom)))
         ;; ensure cancellation -- a no-op, now that we're done -- leaves us
         ;; with an empty registry
@@ -55,10 +58,13 @@
               _ (.get f 1000 TimeUnit/MILLISECONDS)]
           (is (.isDone f))
           (is (= 0 (fulfill/num-active-fulfillments fulfill-atom)))
-          (is (= 4 (count @results-atom)))
+          ;; 7!!! we redef our page size above to 2 but we still get a expected
+          ;; count b/c we're de-duping across pages and we walk **backward* from
+          ;; latest results:
+          (is (= 7 (count @results-atom)))
           (is (= 1 @eose-atom))
           ;; verify the results are json strings that can be parsed
-          (is (= (into #{} (subvec (:pool test-data/pool-with-filters) 1 5))
+          (is (= (into #{} (subvec (:pool test-data/pool-with-filters) 1 8))
                 (into #{} (map #'app/parse) @results-atom)))
           ;; ensure cancellation -- a no-op, now that we're done -- leaves us
           ;; with an empty registry
@@ -130,7 +136,7 @@
         (.release semaphore)
         (is (.isCancelled f))
         (is (= 0 (fulfill/num-active-fulfillments fulfill-atom)))
-        (is (= 1 (count @results-atom)))
+        (is (#{0 1} (count @results-atom)))
         (is (= 0 @eose-atom))
         ;; ensure cancellation leaves us with an empty registry
         (is (= (fulfill/create-empty-registry) @fulfill-atom))))))

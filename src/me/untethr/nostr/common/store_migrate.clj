@@ -6,7 +6,8 @@
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.common.store :as store]
     [me.untethr.nostr.common.validation :as validation]
-    [next.jdbc :as jdbc])
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs])
   (:import (java.sql Connection)
            (org.apache.commons.compress.compressors CompressorStreamFactory)))
 
@@ -165,13 +166,19 @@
 ;; --
 
 (comment
-  (let [file-to-load "./dump/nostr-wellorder-early-1m-v1.jsonl.bz2"
+  (let [#_#_file-to-load "./dump/nostr-wellorder-early-1m-v1.jsonl.bz2"
+        file-to-load "./dump/_eventpools/events-all.jsonl.bz2"
         parsed-schema (store/parse-schema "schema-new.sql")
-        new-db (doto (store/create-sqlite-datasource "./dump/n-load.db"
-                       parsed-schema :read-only? true)
-                 (store/apply-ddl-statements! parsed-schema))
+        new-db (doto (store/create-sqlite-datasource "./nn-load.db"
+                       parsed-schema :read-only? false)
+                 (store/apply-ddl-statements!
+                   ;; WITHOUT INDICES !!!
+                   (update parsed-schema
+                     :ddl-statements
+                     (fn [coll]
+                       (remove #(str/includes? % "create index") coll)))))
         parsed-schema-kv (store/parse-schema "schema-kv.sql")
-        new-db-kv (doto (store/create-sqlite-datasource "nn-kv.db" parsed-schema-kv)
+        new-db-kv (doto (store/create-sqlite-datasource "./nn-kv-load.db" parsed-schema-kv)
                     (store/apply-ddl-statements! parsed-schema-kv))]
     (load-data! file-to-load new-db new-db-kv)))
 

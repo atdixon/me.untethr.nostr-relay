@@ -36,6 +36,8 @@
    ^Histogram websocket-peak-1m-bytes-out
    ^Timer verify-timer
    ^Timer store-event-timer
+   ^Timer commit-timer
+   ^Timer commit-kv-timer
    ^Timer exec-continuation-timer
    ^Timer insert-channel-timer
    ^Timer notify-event-timer
@@ -114,6 +116,8 @@
        (histogram codahale ["app" "websocket" "peak-1m-bytes-out"])
        (timer codahale ["app" "event" "verify"])
        (timer codahale ["app" "event" "store"])
+       (timer codahale ["app" "event" "commit"])
+       (timer codahale ["app" "event" "commit-kv"])
        (timer codahale ["app" "event" "continuation"])
        (timer codahale ["app" "channel" "insert"])
        (timer codahale ["app" "event" "notify"])
@@ -196,6 +200,14 @@
 (defmacro time-store-event!
   [metrics & body]
   `(time! (:store-event-timer ~metrics) ~@body))
+
+(defmacro time-commit!
+  [metrics & body]
+  `(time! (:commit-timer ~metrics) ~@body))
+
+(defmacro time-commit-kv!
+  [metrics & body]
+  `(time! (:commit-kv-timer ~metrics) ~@body))
 
 (defmacro time-exec-continuation!
   [metrics & body]

@@ -69,6 +69,27 @@
         </encoder>
     </appender>
 
+    <appender name="FILE_CHECKPOINT"
+              class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!--
+        see https://p6spy.readthedocs.io/en/latest/configandusage.html
+        this is the active file that we log to...
+        -->
+        <file>logs/db-checkpoint.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- ...and this is the file we rollover to: -->
+            <fileNamePattern>logs/db-checkpoint-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory> <!-- 30 days worth of history -->
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>50MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
     <root level="info">
         <appender-ref ref="STDOUT"/>
         <appender-ref ref="FILE"/>
@@ -94,6 +115,10 @@
 
     <logger name="app.rejected" additivity="false" level="OFF">
         <appender-ref ref="FILE_REJECTED" />
+    </logger>
+
+    <logger name="db.checkpoint" additivity="false" level="OFF">
+        <appender-ref ref="FILE_CHECKPOINT" />
     </logger>
 
 </configuration>

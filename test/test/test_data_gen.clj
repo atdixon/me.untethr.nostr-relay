@@ -3,7 +3,7 @@
     [clojure.test :refer :all]
     [jsonista.core :as json]
     [me.untethr.nostr.app :as app]
-    [me.untethr.nostr.crypt :as crypt]
+    [me.untethr.nostr.crypt.crypt :as crypt]
     [clojure.java.io :as io])
   (:import
     (java.security SecureRandom)
@@ -11,25 +11,29 @@
     (java.io BufferedWriter BufferedOutputStream BufferedInputStream File)
     (com.fasterxml.jackson.databind ObjectMapper MappingJsonFactory)
     (com.fasterxml.jackson.core JsonGenerator$Feature)
-    (clojure.lang Indexed)))
+    (clojure.lang Indexed)
+    (org.apache.commons.lang3 RandomStringUtils)))
 
 (defonce ^Random random (Random.))
 (defonce ^SecureRandom secure-random (SecureRandom.))
 
 (defn- fast-random-event
-  [pk-hex sk-bytes aux-bytes content created-at]
-  (let [event' (hash-map
-                 :pubkey pk-hex
-                 :created_at created-at
-                 :kind 1
-                 :tags [#_["p" (crypt/sha-256 (byte-array 32))]]
-                 :content content)
-        id (#'app/calc-event-id event')
-        id-bytes (crypt/hex-decode id)
-        sig-bytes (crypt/sign sk-bytes id-bytes aux-bytes)]
-    (assoc event'
-      :id id
-      :sig (crypt/hex-encode sig-bytes))))
+  ([pk-hex sk-bytes aux-bytes content created-at]
+   (fast-random-event pk-hex sk-bytes aux-bytes content created-at
+     1 [#_["p" (crypt/sha-256 (byte-array 32))]]))
+  ([pk-hex sk-bytes aux-bytes content created-at kind tags]
+   (let [event' (hash-map
+                  :pubkey pk-hex
+                  :created_at created-at
+                  :kind kind
+                  :tags tags
+                  :content content)
+         id (#'app/calc-event-id event')
+         id-bytes (crypt/hex-decode id)
+         sig-bytes (crypt/sign sk-bytes id-bytes aux-bytes)]
+     (assoc event'
+       :id id
+       :sig (crypt/hex-encode sig-bytes)))))
 
 (defn- slow-random-event
   [content created-at]
@@ -78,8 +82,12 @@
     (with-open [^BufferedWriter w (io/writer f)]
       (dotimes [_ n-events]
         (let [[pk-hex _pk sk] (nth pool (.nextInt random (count pool)))
-              e (fast-random-event pk-hex sk aux-bytes "hello" 0)]
-          (json/write-value w ["EVENT" e] json-mapper)
+              e (fast-random-event pk-hex sk aux-bytes
+                  #_"hello"
+                  (RandomStringUtils/random
+                    (+ 100 (.nextInt secure-random 1000)) 0 0 true true nil secure-random)
+                  (Math/abs (.nextLong secure-random)))]
+          (json/write-value w e #_["EVENT" e] json-mapper)
           (.newLine w))))))
 
 (comment

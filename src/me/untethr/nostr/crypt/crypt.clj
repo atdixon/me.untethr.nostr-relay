@@ -1,5 +1,5 @@
-(ns me.untethr.nostr.crypt
-  (:require [me.untethr.nostr.curve :as c])
+(ns me.untethr.nostr.crypt.crypt
+  (:require [me.untethr.nostr.crypt.curve :as c])
   (:import (java.util Arrays)
            (java.security MessageDigest SecureRandom)
            (java.nio.charset StandardCharsets)

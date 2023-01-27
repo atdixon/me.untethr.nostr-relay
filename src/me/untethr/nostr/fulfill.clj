@@ -6,6 +6,7 @@
   (:require
     [clojure.string :as str]
     [clojure.tools.logging :as log]
+    [me.untethr.nostr.common :as common]
     [next.jdbc :as jdbc]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.query.engine :as engine]
@@ -41,7 +42,8 @@
       (doto (ThreadFactoryBuilder.)
         (.setDaemon true)
         (.setNameFormat "fulfillment-%d")
-        (.setUncaughtExceptionHandler
+        ;; uncaughtExceptionHandler not working when used in context of executor
+        #_(.setUncaughtExceptionHandler
           (reify Thread$UncaughtExceptionHandler
             (^void uncaughtException [_this ^Thread _th ^Throwable t]
               (log/error t "uncaught exeception in fulfillment thread"))))))))
@@ -64,9 +66,11 @@
                              (contains? % :limit) (update :limit min overall-limit))
                            :page-size overall-limit
                            :table-target-ids table-max-ids) filters))
-              page-of-ids (mapv :event_id
-                            (jdbc/execute! (:readonly-datasource db-cxns) q
-                              {:builder-fn rs/as-unqualified-lower-maps}))]
+              page-of-ids (vec
+                            (distinct ;; if we have multiple filters there may be dupes in the page (see notes below)
+                              (map :event_id
+                                (jdbc/execute! (:readonly-datasource db-cxns) q
+                                  {:builder-fn rs/as-unqualified-lower-maps}))))]
           ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
           (transduce
             ;; note: if observer throws exception we catch below and for
@@ -126,8 +130,10 @@
   (let [sid (str channel-id ":" req-id)
         cancelled?-vol (volatile! false)
         f (.submit global-pool
-            ^Runnable (partial fulfill-entirely! metrics db-cxns channel-id req-id
-                        cancelled?-vol filters table-max-ids observer eose-callback))]
+            (common/wrap-runnable-handle-uncaught-exc
+              "fulfill/submit!"
+              (partial fulfill-entirely! metrics db-cxns channel-id req-id
+                cancelled?-vol filters table-max-ids observer eose-callback)))]
     (add-to-registry! fulfill-atom channel-id sid f cancelled?-vol)
     f))
 
@@ -140,7 +146,11 @@
         q-results (jdbc/execute! (:readonly-datasource db-cxns) q
                     {:builder-fn rs/as-unqualified-lower-maps})
         page-stats (engine/calculate-page-stats q-results)
-        page-of-ids (mapv :event_id q-results)]
+        ;; note when we have multiple filters we might produce duplicate ids
+        ;; across pages ... at least for each batch we will de-duplicate here
+        ;; plus we use (count page-of-ids) to manage quota so we need this
+        ;; distinct here:
+        page-of-ids (vec (distinct (map :event_id q-results)))]
     (metrics/time-fulfillment! metrics
       (transduce
         ;; note: if observer throws exception we catch below and for
@@ -196,7 +206,10 @@
                         (util/nanos-to-millis (- (System/nanoTime) start-nanos))))
                     :else
                     (do
-                      (->> (.submit global-pool ^Runnable (partial batch-fn next-active-filters (inc iteration-num) (+ total-rows-so-far curr-page-size)))
+                      (->> (.submit global-pool
+                             (common/wrap-runnable-handle-uncaught-exc
+                               "fulfill/submit-use-batching!/batch-fn"
+                               (partial batch-fn next-active-filters (inc iteration-num) (+ total-rows-so-far curr-page-size))))
                         (vreset! latest-task-future-vol)))))))
             (catch Throwable t
               (log/error t "during fulfill batch")
@@ -208,7 +221,10 @@
                                         :page-size batch-size
                                         :table-target-ids table-max-ids) filters)
         _first-batch-future (try
-                              (->> (.submit global-pool ^Runnable (partial batch-fn initial-active-filters 0 0))
+                              (->> (.submit global-pool
+                                     (common/wrap-runnable-handle-uncaught-exc
+                                       "fulfill/submit-use-batching!"
+                                       (partial batch-fn initial-active-filters 0 0)))
                                 (vreset! latest-task-future-vol))
                               (catch Exception e
                                 (log/error e "failed to submit")

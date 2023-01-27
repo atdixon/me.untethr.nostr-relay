@@ -6,6 +6,7 @@
             [me.untethr.nostr.common :as common]
             [me.untethr.nostr.common.domain :as domain]
             [next.jdbc :as jdbc]
+            [next.jdbc.prepare :as p]
             [next.jdbc.result-set :as rs])
   (:import (com.codahale.metrics MetricRegistry)
            (com.p6spy.engine.event JdbcEventListener)
@@ -408,13 +409,14 @@
         " values (?, ?, ?, ?)")]))
   (^PreparedStatement [cxn params-vec]
    ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.3.847/doc/getting-started/prepared-statements#prepared-statement-parameters
-   (into (insert-e-tag-new-schema-prepared-stmt cxn) params-vec)))
+   (p/set-parameters (insert-e-tag-new-schema-prepared-stmt cxn) params-vec)))
 
 (defn insert-e-tag-new-schema!
   [writeable-db source-event-id tagged-event-id source-kind source-created-at]
-  (jdbc/execute-one! writeable-db
-    (insert-e-tag-new-schema-prepared-stmt writeable-db
-      [source-event-id tagged-event-id source-kind source-created-at])))
+  (with-open [prepared-stmt
+              (insert-e-tag-new-schema-prepared-stmt writeable-db
+                [source-event-id tagged-event-id source-kind source-created-at])]
+    (jdbc/execute-one! prepared-stmt)))
 
 (defn ^:deprecated insert-p-tag!
   [writeable-db source-event-id tagged-pubkey]
@@ -434,13 +436,14 @@
         " values (?, ?, ?, ?, ?)")]))
   (^PreparedStatement [cxn params-vec]
    ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.3.847/doc/getting-started/prepared-statements#prepared-statement-parameters
-   (into (insert-p-tag-new-schema-prepared-stmt cxn) params-vec)))
+   (p/set-parameters (insert-p-tag-new-schema-prepared-stmt cxn) params-vec)))
 
 (defn insert-p-tag-new-schema!
   [writeable-db source-event-id tagged-pubkey source-kind source-created-at source-pubkey]
-  (jdbc/execute-one! writeable-db
-    (insert-p-tag-new-schema-prepared-stmt writeable-db
-      [source-event-id tagged-pubkey source-kind source-created-at source-pubkey])))
+  (with-open [prepared-stmt
+              (insert-p-tag-new-schema-prepared-stmt writeable-db
+                [source-event-id tagged-pubkey source-kind source-created-at source-pubkey])]
+    (jdbc/execute-one! prepared-stmt)))
 
 (defn ^:deprecated insert-x-tag!
   [writeable-db source-event-id generic-tag tagged-value]
@@ -468,22 +471,23 @@
         " values (?, ?, ?, ?)")]))
   (^PreparedStatement [cxn params-vec]
    ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.3.847/doc/getting-started/prepared-statements#prepared-statement-parameters
-   (into (insert-x-tag-new-schema-prepared-stmt cxn) params-vec)))
+   (p/set-parameters (insert-x-tag-new-schema-prepared-stmt cxn) params-vec)))
 
 (defn insert-x-tag-new-schema!
   [writeable-db source-event-id generic-tag tagged-value source-created-at]
-  (jdbc/execute-one! writeable-db
-    (insert-x-tag-new-schema-prepared-stmt writeable-db
-      [source-event-id
-       generic-tag
-       ;; Note: we arbitrarily limit generic tags to 2056 characters, and
-       ;; we'll query with the same restriction. That is, any values that
-       ;; exceed 2056 characters will match any query value that exceeds
-       ;; 2056 characters whenever their first 2056 characters match.
-       (if (> (count tagged-value) 2056)
-         (subs tagged-value 0 2056)
-         tagged-value)
-       source-created-at])))
+  (with-open [prepared-stmt
+              (insert-x-tag-new-schema-prepared-stmt writeable-db
+                [source-event-id
+                 generic-tag
+                 ;; Note: we arbitrarily limit generic tags to 2056 characters, and
+                 ;; we'll query with the same restriction. That is, any values that
+                 ;; exceed 2056 characters will match any query value that exceeds
+                 ;; 2056 characters whenever their first 2056 characters match.
+                 (if (> (count tagged-value) 2056)
+                   (subs tagged-value 0 2056)
+                   tagged-value)
+                 source-created-at])]
+    (jdbc/execute-one! prepared-stmt)))
 
 ;; -- facade --
 
@@ -503,34 +507,67 @@
 (def ^:private max-tags-per-type 3000) ;; for now just simply quietly crop after 5000
 
 (defn- internal-execute-continuation!
-  [db-cxn
+  "Note! whoever calls this must use a transaction or auto-commit or do their own
+  eventual .commit"
+  [tx-or-cxn
    {:keys [obo-row-id
            p-tags-insert-batch
            e-tags-insert-batch
            x-tags-insert-batch] :as _prev-continuation}]
-  (jdbc/with-transaction [tx db-cxn]
-    (let [e-tag-insert-prepared (insert-e-tag-new-schema-prepared-stmt tx)
-          p-tag-insert-prepared (insert-p-tag-new-schema-prepared-stmt tx)
-          x-tag-insert-prepared (insert-x-tag-new-schema-prepared-stmt tx)]
-      (domain/->IndexEventContinuation
-        obo-row-id
-        (when-not (empty? p-tags-insert-batch)
-          (let [[immediates leftovers] (split-at max-tags-per-store-op p-tags-insert-batch)]
-            (jdbc/execute-batch! p-tag-insert-prepared immediates)
-            (take max-tags-per-type leftovers)))
-        (when-not (empty? e-tags-insert-batch)
-          (let [[immediates leftovers] (split-at max-tags-per-store-op e-tags-insert-batch)]
-            (jdbc/execute-batch! e-tag-insert-prepared immediates)
-            (take max-tags-per-type leftovers)))
-        (when-not (empty? x-tags-insert-batch)
-          (let [[immediates leftovers] (split-at max-tags-per-store-op x-tags-insert-batch)]
-            (jdbc/execute-batch! x-tag-insert-prepared immediates)
-            (take max-tags-per-type leftovers)))))))
+  (with-open [e-tag-insert-prepared (insert-e-tag-new-schema-prepared-stmt tx-or-cxn)
+              p-tag-insert-prepared (insert-p-tag-new-schema-prepared-stmt tx-or-cxn)
+              x-tag-insert-prepared (insert-x-tag-new-schema-prepared-stmt tx-or-cxn)]
+    (domain/->IndexEventContinuation
+      obo-row-id
+      (when-not (empty? p-tags-insert-batch)
+        (let [[immediates leftovers] (split-at max-tags-per-store-op p-tags-insert-batch)]
+          (jdbc/execute-batch! p-tag-insert-prepared immediates)
+          (take max-tags-per-type leftovers)))
+      (when-not (empty? e-tags-insert-batch)
+        (let [[immediates leftovers] (split-at max-tags-per-store-op e-tags-insert-batch)]
+          (jdbc/execute-batch! e-tag-insert-prepared immediates)
+          (take max-tags-per-type leftovers)))
+      (when-not (empty? x-tags-insert-batch)
+        (let [[immediates leftovers] (split-at max-tags-per-store-op x-tags-insert-batch)]
+          (jdbc/execute-batch! x-tag-insert-prepared immediates)
+          (take max-tags-per-type leftovers))))))
+
+(defn internal-store-event-new-schema!-
+  [tx-or-cxn channel-id {:keys [id pubkey created_at kind tags] :as _e}]
+  (if-let [rowid (insert-event-new-schema! tx-or-cxn id pubkey created_at kind channel-id)]
+    ;; !!! NOTE presently our query and pagination strategy depend on the tags for new
+    ;; source events to be inserted altogether with each rowid consecutive
+    (let [{:keys [p-tag-insert-batch
+                  e-tag-insert-batch
+                  x-tag-insert-batch]}
+          (reduce
+            (fn [acc [tag-kind arg0 :as _tag-vec]]
+              (let [next-acc
+                    (cond
+                      ;; we've seen empty tags in the wild (eg {... "tags": [[], ["p", "abc.."]] })
+                      ;;  so we'll just handle those gracefully.
+                      (or (nil? tag-kind) (nil? arg0)) acc
+                      (= tag-kind "e") (update acc :e-tag-insert-batch conj [id arg0 kind created_at])
+                      (= tag-kind "p") (update acc :p-tag-insert-batch conj [id arg0 kind created_at pubkey])
+                      (common/indexable-tag-str?* tag-kind) (update acc :x-tag-insert-batch conj [id tag-kind arg0 created_at])
+                      :else acc)]
+                next-acc))
+            {:p-tag-insert-batch []
+             :e-tag-insert-batch []
+             :x-tag-insert-batch []}
+            tags)]
+      (internal-execute-continuation! tx-or-cxn
+        (domain/->IndexEventContinuation
+          rowid
+          p-tag-insert-batch
+          e-tag-insert-batch
+          x-tag-insert-batch)))
+    :index-duplicate))
 
 (defn store-event-new-schema!-
   ([writeable-conn event-obj]
    (store-event-new-schema!- writeable-conn nil event-obj))
-  ([writeable-conn channel-id {:keys [id pubkey created_at kind tags] :as _e}]
+  ([writeable-conn channel-id event-obj & {:keys [transact?] :or {transact? true}}]
    ;; sqlite favors transactions - however we may split transactions that are
    ;; too big (for events with many tags) - if we encounter a situation
    ;; where we partially index an event, then so be it. we have a master repo of
@@ -541,41 +578,16 @@
    ;;
    ;; no matter what our datasource's auto-commit is, jdbc.next's with-transaction
    ;; will begin/commit.
-   (jdbc/with-transaction [tx writeable-conn]
-     (if-let [rowid (insert-event-new-schema! tx id pubkey created_at kind channel-id)]
-       ;; !!! NOTE presently our query and pagination strategy depend on the tags for new
-       ;; source events to be inserted altogether with each rowid consecutive
-       (let [{:keys [p-tag-insert-batch
-                     e-tag-insert-batch
-                     x-tag-insert-batch]}
-             (reduce
-               (fn [acc [tag-kind arg0 :as _tag-vec]]
-                 (let [next-acc
-                       (cond
-                         ;; we've seen empty tags in the wild (eg {... "tags": [[], ["p", "abc.."]] })
-                         ;;  so we'll just handle those gracefully.
-                         (or (nil? tag-kind) (nil? arg0)) acc
-                         (= tag-kind "e") (update acc :e-tag-insert-batch conj [id arg0 kind created_at])
-                         (= tag-kind "p") (update acc :p-tag-insert-batch conj [id arg0 kind created_at pubkey])
-                         (common/indexable-tag-str?* tag-kind) (update acc :x-tag-insert-batch conj [id tag-kind arg0 created_at])
-                         :else acc)]
-                   next-acc))
-               {:p-tag-insert-batch []
-                :e-tag-insert-batch []
-                :x-tag-insert-batch []}
-               tags)]
-         (internal-execute-continuation! tx
-           (domain/->IndexEventContinuation
-             rowid
-             p-tag-insert-batch
-             e-tag-insert-batch
-             x-tag-insert-batch)))
-       :index-duplicate))))
+   (if transact?
+     (jdbc/with-transaction [tx writeable-conn]
+       (internal-store-event-new-schema!- tx channel-id event-obj))
+     (internal-store-event-new-schema!- writeable-conn channel-id event-obj))))
 
 (defn index-and-store-event!
   ([writeable-conn writeable-conn-kv event-obj raw-event]
    (index-and-store-event! writeable-conn writeable-conn-kv nil event-obj raw-event))
-  ([writeable-conn writeable-conn-kv channel-id {:keys [id] :as event-obj} raw-event]
+  ([writeable-conn writeable-conn-kv channel-id {:keys [id] :as event-obj} raw-event
+    & {:keys [transact?] :or {transact? true}}]
    ;; consider future where we index in a queue after durable write -- would this
    ;; be ok -- implication might be that a websocket that wrote, disconnected and
    ;; tried to read might not immediately see their write -- but would we care?
@@ -589,7 +601,8 @@
      ;; succession events twice; should be rare unless we're getting duplicate
      ;; events fired at us from some non-client in rapid succession)
      (let [duplicate-or-continuation
-           (store-event-new-schema!- writeable-conn channel-id event-obj)]
+           (store-event-new-schema!- writeable-conn channel-id event-obj
+             :transact? transact?)]
        (cond
          (domain/continuation? duplicate-or-continuation) duplicate-or-continuation
          :else

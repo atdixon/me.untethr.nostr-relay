@@ -2,6 +2,7 @@
   (:require
     [clojure.string :as str]
     [clojure.tools.logging :as log]
+    [me.untethr.nostr.common :as common]
     [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.metrics :as metrics]
     [me.untethr.nostr.common.store :as store]
@@ -21,7 +22,8 @@
       (doto (ThreadFactoryBuilder.)
         (.setDaemon true)
         (.setNameFormat "write-thread-%d")
-        (.setUncaughtExceptionHandler
+        ;; uncaughtExceptionHandler not working when used in context of executor
+        #_(.setUncaughtExceptionHandler
           ;; note, doesn't seem to catch for schedule tasks which simply get exceptions
           ;; swallowed and the scheduled task cancelled
           (reify Thread$UncaughtExceptionHandler
@@ -190,52 +192,62 @@
 (defn- enq-checkpoint!
   [metrics db-cxns]
   (.submit single-event-thread
-    ^Runnable
-    (fn []
-      (let [start-ns (System/nanoTime)]
-        (let [{:keys [busy log checkpointed]}
-              (metrics/time-db-checkpoint! metrics
-                (store/checkpoint! (get-singleton-connection! db-cxns)))]
-          (if (zero? busy)
-            (metrics/mark-db-checkpoint-full! metrics)
-            (metrics/mark-db-checkpoint-partial! metrics))
-          (metrics/db-checkpoint-pages! metrics checkpointed))
-        (log/debugf "checkpointed db (%d ms)"
-          (util/nanos-to-millis (- (System/nanoTime) start-ns))))))
+    (common/wrap-runnable-handle-uncaught-exc
+      "enq-checkpoint!/0"
+      (fn []
+        (let [start-ns (System/nanoTime)]
+          (let [{:keys [busy log checkpointed] :as checkpoint-result}
+                (metrics/time-db-checkpoint! metrics
+                  (store/checkpoint! (get-singleton-connection! db-cxns)))]
+            (log/log log/*logger-factory* "db.checkpoint" :info nil
+              (str "[index] " checkpoint-result))
+            (if (zero? busy)
+              (metrics/mark-db-checkpoint-full! metrics)
+              (metrics/mark-db-checkpoint-partial! metrics))
+            (metrics/db-checkpoint-pages! metrics checkpointed))
+          (log/debugf "checkpointed db (%d ms)"
+            (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
   (.submit single-event-thread
-    ^Runnable
-    (fn []
-      (vreset! checkpoint-enqueued?-vol false)
-      (let [start-ns (System/nanoTime)]
-        (let [{:keys [busy log checkpointed]}
-              (metrics/time-db-kv-checkpoint! metrics
-                (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
-          (if (zero? busy)
-            (metrics/mark-db-kv-checkpoint-full! metrics)
-            (metrics/mark-db-kv-checkpoint-partial! metrics))
-          (metrics/db-kv-checkpoint-pages! metrics checkpointed))
-        (log/debugf "checkpointed kv db (%d ms)"
-          (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
+    (common/wrap-runnable-handle-uncaught-exc
+      "enq-checkpoint!/1"
+      (fn []
+        (vreset! checkpoint-enqueued?-vol false)
+        (let [start-ns (System/nanoTime)]
+          (let [{:keys [busy log checkpointed] :as checkpoint-result}
+                (metrics/time-db-kv-checkpoint! metrics
+                  (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
+            (log/log log/*logger-factory* "db.checkpoint" :info nil
+              (str "[kv] " checkpoint-result))
+            (if (zero? busy)
+              (metrics/mark-db-kv-checkpoint-full! metrics)
+              (metrics/mark-db-kv-checkpoint-partial! metrics))
+            (metrics/db-kv-checkpoint-pages! metrics checkpointed))
+          (log/debugf "checkpointed kv db (%d ms)"
+            (util/nanos-to-millis (- (System/nanoTime) start-ns))))))))
 
 (defn- enq-commit!
   ;; note: we expect a singleton db connection and auto-commit = false
-  ;; todo should we want to close and re-open connections, this is where
-  ;;    we could close/re-connect our singleton connection from hikari pool
-  ;;    and assume it will evict the connection -- we have to do this
-  ;;    right after commit while we're holding the singleton write thread.
   [metrics db-cxns]
   (.submit single-event-thread
-    ^Runnable
-    (fn []
-      (.commit (get-singleton-connection! db-cxns))))
+    (common/wrap-runnable-handle-uncaught-exc
+      "enq-commit!/0"
+      (fn []
+        (let [use-cxn (get-singleton-connection! db-cxns)]
+          (when-not (.getAutoCommit use-cxn)
+            (metrics/time-commit! metrics
+              (.commit use-cxn)))))))
   (.submit single-event-thread
-    ^Runnable
-    (fn []
-      (vreset! commit-enqueued?-vol false)
-      (.commit (get-singleton-kv-connection! db-cxns))
-      (when-not @checkpoint-enqueued?-vol
-        (enq-checkpoint! metrics db-cxns)
-        (vreset! checkpoint-enqueued?-vol true)))))
+    (common/wrap-runnable-handle-uncaught-exc
+      "enq-commit!/1"
+      (fn []
+        (vreset! commit-enqueued?-vol false)
+        (let [use-cxn (get-singleton-kv-connection! db-cxns)]
+          (when-not (.getAutoCommit use-cxn)
+            (metrics/time-commit-kv! metrics
+              (.commit use-cxn))))
+        (when-not @checkpoint-enqueued?-vol
+          (enq-checkpoint! metrics db-cxns)
+          (vreset! checkpoint-enqueued?-vol true))))))
 
 (defn run-async!
   ^ListenableFuture [metrics db-cxns task-fn success-fn failure-fn]
@@ -244,11 +256,13 @@
     (try
       (swap! run-async!-backlog-size-atom inc)
       (.submit single-event-thread
-        (reify Callable
-          (call [_this]
-            (task-fn
-              (get-singleton-connection! db-cxns)
-              (get-singleton-kv-connection! db-cxns)))))
+        (common/wrap-callable-handle-uncaught-exc
+          "run-async!/0"
+          (reify Callable
+            (call [_this]
+              (task-fn
+                (get-singleton-connection! db-cxns)
+                (get-singleton-kv-connection! db-cxns))))))
       (catch RejectedExecutionException e
         (swap! run-async!-backlog-size-atom dec)
         (throw (ex-info "unexpected write thread rejection" {} e))))
@@ -258,7 +272,7 @@
     ;; on readers and if we should have a diff. checkpoint strategy)
     ;;  disabled for now -- using autocheckpointing:
     (add-callback!
-      (fn [x]
+      (fn [_x]
         (swap! run-async!-backlog-size-atom dec)
         (when-not @commit-enqueued?-vol
           (enq-commit! metrics db-cxns)
@@ -324,34 +338,38 @@
      metrics
      db-cxns
      (fn [db-cxn db-kv-cxn]
-       (metrics/time-store-event! metrics
-         (let [continuation-or-terminal-result
+       (let [continuation-or-terminal-result
+             (metrics/time-store-event! metrics
                (store/index-and-store-event!
                  db-cxn
                  db-kv-cxn
-                 channel-id verified-event-obj raw-event)]
-           ;; for super events with many tags we break them up into "continuation"
-           ;; writes ... note that there is a question about deleted and/or replaceable
-           ;; events arriving while their prior is still being processed as a continuation
-           ;; b/c continuations are always inserting into tag tables, we have a trigger
-           ;; on those that make sure they get inserted with the source_event_deleted_
-           ;; status that matches the authoritative entry in the n_events table, which
-           ;; is *always* inserted first before any others... so this should guarantee
-           ;; that tag tables have the proper deleted status even in the face of
-           ;; interleaving continuations...
-           (if (domain/continuation? continuation-or-terminal-result)
-             (if (not (domain/empty-continuation? continuation-or-terminal-result))
-               (submit-continuation! metrics db-cxns continuation-or-terminal-result
-                 maybe-finale-callback)
-               (do
-                 (when maybe-finale-callback
-                   (maybe-finale-callback))
-                 :success))
-             ;; terminal result:
+                 channel-id
+                 verified-event-obj
+                 raw-event
+                 ;; we'll do our own commit management on both db connections!
+                 :transact? false))]
+         ;; for super events with many tags we break them up into "continuation"
+         ;; writes ... note that there is a question about deleted and/or replaceable
+         ;; events arriving while their prior is still being processed as a continuation
+         ;; b/c continuations are always inserting into tag tables, we have a trigger
+         ;; on those that make sure they get inserted with the source_event_deleted_
+         ;; status that matches the authoritative entry in the n_events table, which
+         ;; is *always* inserted first before any others... so this should guarantee
+         ;; that tag tables have the proper deleted status even in the face of
+         ;; interleaving continuations...
+         (if (domain/continuation? continuation-or-terminal-result)
+           (if (not (domain/empty-continuation? continuation-or-terminal-result))
+             (submit-continuation! metrics db-cxns continuation-or-terminal-result
+               maybe-finale-callback)
              (do
                (when maybe-finale-callback
                  (maybe-finale-callback))
-               continuation-or-terminal-result)))))
+               :success))
+           ;; terminal result:
+           (do
+             (when maybe-finale-callback
+               (maybe-finale-callback))
+             continuation-or-terminal-result))))
      (fn [store-result]
        (if (identical? store-result :duplicate)
          (duplicate-event-callback)

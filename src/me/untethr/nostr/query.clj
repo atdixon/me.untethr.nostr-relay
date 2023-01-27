@@ -71,7 +71,8 @@
 
 (defn generic-filter->query-new
   [cols-str {:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter}
-   & {:keys [?endcap-row-id ?endcap-created-at override-limit]}]
+   & {:keys [endcap-row-id endcap-created-at override-limit]}]
+  {:pre [(some? endcap-row-id) (some? endcap-created-at)]}
   (let [generic-tags (->non-e-or-p-generic-tags filter)
         [base-expr base-params] (filter->base* ids kinds since until authors e# p# generic-tags
                                   :id-col-name "event_id")
@@ -91,10 +92,11 @@
             :else
             (format "select %s from %s cross join n_events v where %s and %s"
               cols-str join-clause join-expr base-expr))
-        extra-clauses (cond-> []
-                        (some? ?endcap-created-at) (conj (str "v.created_at <= " ?endcap-created-at))
-                        (some? ?endcap-row-id) (conj (str "v.id <= " ?endcap-row-id))
-                        true (conj "v.deleted_ = 0"))
+        extra-clauses [(str
+                         "v.deleted_ = 0"
+                         " and v.created_at < " (dec endcap-created-at)
+                         " or  (v.created_at = " endcap-created-at " and "
+                         #_... "v.id <= " endcap-row-id ")")]
         q (str q (if (empty? base-expr) " where " " and ") (str/join " and " extra-clauses))
         q (if (empty? join-clause) q (str q " group by v.id")) ;; when joining don't produce duplicates
         use-limit (or override-limit limit)]

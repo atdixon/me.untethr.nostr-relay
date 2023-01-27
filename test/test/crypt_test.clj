@@ -3,7 +3,7 @@
             [clojure.java.io :as io]
             [clojure.data.csv :as csv]
             [clojure.string :as str]
-            [me.untethr.nostr.crypt :as crypt]
+            [me.untethr.nostr.crypt.crypt :as crypt]
             [clojure.tools.logging :as log]))
 
 ;; https://bips.xyz/340

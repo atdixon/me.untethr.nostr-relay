@@ -16,10 +16,12 @@
   ;; cursor-row-id is inclusive - ie for the next query issued for this
   ;; filter state, we will want to allow the row id to be *included*
   ;; in the query results.
-  [stereotype the-filter page-size remaining-quota cursor-row-id])
+  ;; cursor-created-at is inclusive as well (but of course query will remove
+  ;; rows with matching created-ats with rowids that exceed cursor-row-id)
+  [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at])
 
 (defrecord ActiveFilterPageStats
-  [num-results min-seen-row-id])
+  [num-results min-seen-row-id min-seen-created-at])
 
 (defn- stereotype-filter
   [{:keys [ids kinds authors] _limit :limit e# :#e p# :#p :as the-filter}]
@@ -65,17 +67,17 @@
 (defn stereotyped-filter->query
   [stereotype
    {:keys [ids kinds since until authors] _limit :limit e# :#e p# :#p :as the-filter}
-   & {:keys [endcap-row-id ?endcap-created-at override-limit]}]
-  {:pre [(some? endcap-row-id) (some? override-limit)]}
+   & {:keys [endcap-row-id endcap-created-at override-limit]}]
+  {:pre [(some? endcap-row-id) (some? endcap-created-at) (some? override-limit)]}
   (case stereotype
     ;; -- single attr only queries --
     :kinds-only
     (kind-based/kinds-only-single-query
-      "id, event_id, created_at" kinds ?endcap-created-at endcap-row-id override-limit
+      "id, event_id, created_at" kinds endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :pubkeys-only
     (pubkey-based/pubkeys-only-single-query
-      "id, event_id, created_at" authors ?endcap-created-at endcap-row-id override-limit
+      "id, event_id, created_at" authors endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :e-tags-only
     (e-or-p-based/e#-tags-only-single-query
@@ -84,36 +86,36 @@
       ;; we obtain should truly be the min id for any given source_event_id
       ;; ASSUMING that the source_event_created_at is identical for every source_event_id.
       "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-      e# ?endcap-created-at endcap-row-id override-limit
+      e# endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :p-tags-only
     (e-or-p-based/p#-tags-only-single-query
       ;; using min(id) -- see min(id) note above.
       "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-      p# ?endcap-created-at endcap-row-id override-limit
+      p# endcap-created-at endcap-row-id override-limit
       :since since :until until)
     ;; -- common pair attr queries --
     :pubkeys-and-kinds-only
     (pubkey-based/pubkeys-and-kinds-only-single-query
-      "id, event_id, created_at" authors kinds ?endcap-created-at endcap-row-id override-limit
+      "id, event_id, created_at" authors kinds endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :e-tags-and-kinds-only
     (e-or-p-based/e#-tags-and-kinds-only-single-query
       ;; using min(id) -- see min(id) note above.
       "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-      e# kinds ?endcap-created-at endcap-row-id override-limit
+      e# kinds endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :p-tags-and-kinds-only
     (e-or-p-based/p#-tags-and-kinds-only-single-query
       ;; using min(id) -- see min(id) note above.
       "min(id) as id, source_event_id as event_id, source_event_created_at as created_at"
-      p# kinds ?endcap-created-at endcap-row-id override-limit
+      p# kinds endcap-created-at endcap-row-id override-limit
       :since since :until until)
     :generic-unoptimized
     (legacy-query/generic-filter->query-new "v.id, v.event_id, v.created_at" the-filter
       :override-limit override-limit
-      :?endcap-row-id endcap-row-id
-      :?endcap-created-at ?endcap-created-at)))
+      :endcap-row-id endcap-row-id
+      :endcap-created-at endcap-created-at)))
 
 ;; this version primarily for testing:
 (defn filter->query [the-filter & more]
@@ -132,9 +134,10 @@
   {:pre [(not-empty active-filters)]}
   (make-union-query
     (map-indexed
-      (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id] :as _active-filter}]
+      (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at] :as _active-filter}]
         (let [[sql & sql-args] (stereotyped-filter->query stereotype the-filter
                                  :endcap-row-id cursor-row-id
+                                 :endcap-created-at cursor-created-at
                                  :override-limit (min remaining-quota page-size))]
           (apply vector (format "select %d as filter_index, * from (%s)" idx sql) sql-args)))
       active-filters)))
@@ -159,7 +162,7 @@
     :generic-unoptimized (:n-events-id max-row-ids)))
 
 (defn init-active-filter
-  [{:keys [limit] :as f}
+  [{:keys [until limit] :as f}
    & {:keys [page-size table-target-ids override-quota]
       :or {page-size 250
            table-target-ids (domain/->TableMaxRowIds
@@ -168,17 +171,20 @@
                               Integer/MAX_VALUE
                               Integer/MAX_VALUE)}}]
   (let [stereotype (stereotype-filter f)]
-    (->ActiveFilterState stereotype f page-size (or override-quota limit Integer/MAX_VALUE)
-      (pick-max-row-id stereotype table-target-ids))))
+    (->ActiveFilterState stereotype f page-size
+      (or override-quota limit Integer/MAX_VALUE)
+      (pick-max-row-id stereotype table-target-ids)
+      (or until Long/MAX_VALUE))))
 
 (defn next-active-filters
   [active-filters prev-page-stats]
   (reduce
     (fn [acc [filter-idx active-filter]]
-      (if-let [{:keys [num-results min-seen-row-id]} (get prev-page-stats filter-idx)]
+      (if-let [{:keys [num-results min-seen-row-id min-seen-created-at]} (get prev-page-stats filter-idx)]
         (let [new-active-filter (-> active-filter
                                   (update :remaining-quota - num-results)
-                                  (assoc :cursor-row-id (dec min-seen-row-id)))]
+                                  (assoc :cursor-row-id (dec min-seen-row-id))
+                                  (assoc :cursor-created-at min-seen-created-at))]
           (if (pos? (:remaining-quota new-active-filter))
             (conj acc new-active-filter)
             ;; no more quota (i.e. we've reached the filter's limit or our own
@@ -196,16 +202,17 @@
   ;; produce results (i.e., we'll never see an page stats in our returned
   ;; map with a zero num-results or a nil min-seen-row-id...
   (reduce
-    (fn [acc {:keys [filter_index id]}]
-      {:pre [(number? filter_index) (some? id)]}
+    (fn [acc {:keys [filter_index id created_at]}]
+      {:pre [(number? filter_index) (some? id) (some? created_at)]}
       (-> acc
         (update
           filter_index
           (fnil (fn [curr-stats]
                   (-> curr-stats
                     (update :num-results inc)
-                    (update :min-seen-row-id min id)))
-            (->ActiveFilterPageStats 0 id))))
+                    (update :min-seen-row-id min id)
+                    (update :min-seen-created-at min created_at)))
+            (->ActiveFilterPageStats 0 id created_at))))
       )
     {}
     filters-query-results))

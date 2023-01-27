@@ -1,4 +1,4 @@
-(ns me.untethr.nostr.curve
+(ns me.untethr.nostr.crypt.curve
   (:refer-clojure :exclude [infinite?]))
 
 (defrecord Point [^BigInteger x ^BigInteger y])
