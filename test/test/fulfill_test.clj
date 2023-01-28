@@ -3,10 +3,15 @@
             [me.untethr.nostr.common.domain :as domain]
             [me.untethr.nostr.fulfill :as fulfill]
             [me.untethr.nostr.app :as app]
+            [next.jdbc :as jdbc]
             [test.support :as support]
             [test.test-data :as test-data]
             [me.untethr.nostr.common.metrics :as metrics])
   (:import (java.util.concurrent Future TimeUnit Semaphore)))
+
+(defn- query-max-id
+  [db table-name]
+  (:max_id (jdbc/execute-one! db [(format "select max(id) as max_id from %s" table-name)])))
 
 (deftest fulfill-test
   (support/with-memory-db-kv-schema [db-kv]
@@ -18,7 +23,9 @@
             ^Future f (fulfill/submit! (metrics/create-metrics)
                         (domain/init-database-cxns db db db-kv db-kv)
                         fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
-                        (domain/->TableMaxRowIds 5 -1 -1 -1)
+                        (domain/->TableMaxRowIds
+                          (query-max-id db "n_events")
+                          -1 -1 -1)
                         (fn [res]
                           (swap! results-atom conj res))
                         #(swap! eose-atom inc))
@@ -54,7 +61,7 @@
                           "chan-id"
                           "req-id"
                           [{:since 110} {:since 120}]
-                          (domain/->TableMaxRowIds 5 -1 -1 -1)
+                          (domain/->TableMaxRowIds (query-max-id db "n_events") -1 -1 -1)
                           (fn [res]
                             (swap! results-atom conj res))
                           #(swap! eose-atom inc))
@@ -87,7 +94,7 @@
             ^Future f (fulfill/submit! (metrics/create-metrics)
                         (domain/init-database-cxns db db db-kv db-kv) fulfill-atom
                         "chan-id" "req-id" [{:since 110} {:since 120}]
-                        (domain/->TableMaxRowIds 5 -1 -1 -1)
+                        (domain/->TableMaxRowIds (query-max-id db "n_events") -1 -1 -1)
                         (fn [res]
                           ;; block so our cancellation is guaranteed to cancel
                           ;; us in media res
@@ -126,7 +133,7 @@
             ^Future f (fulfill/submit-use-batching! (metrics/create-metrics)
                         (domain/init-database-cxns db db db-kv db-kv)
                         fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
-                        (domain/->TableMaxRowIds 5 -1 -1 -1)
+                        (domain/->TableMaxRowIds (query-max-id db "n_events") -1 -1 -1)
                         (fn [res]
                           ;; block so our cancellation is guaranteed to cancel
                           ;; us in media res

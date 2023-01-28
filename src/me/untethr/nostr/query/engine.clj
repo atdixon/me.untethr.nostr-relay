@@ -24,7 +24,8 @@
    page-size
    remaining-quota
    cursor-row-id
-   cursor-created-at])
+   cursor-created-at
+   max-row-id])
 
 (defrecord ActiveFilterPageStats
   [num-results min-seen-row-id min-seen-created-at])
@@ -157,12 +158,15 @@
   {:pre [(not-empty active-filters)]}
   (make-union-all-query
     (map-indexed
-      (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at] :as _active-filter}]
+      (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at max-row-id] :as _active-filter}]
         (let [[sql & sql-args] (stereotyped-filter->query stereotype the-filter
                                  :endcap-row-id cursor-row-id
                                  :endcap-created-at cursor-created-at
                                  :override-limit (min remaining-quota page-size))]
-          (apply vector (format "select %d as filter_index, * from (%s)" idx sql) sql-args)))
+          ;; note: the max-row-id restriction; this is applied after limits so overhead should be low, and
+          ;; this prevents us from fulfilling new events that would get sent via active notification paths.
+          ;; a future optimization might make this condition more embedded in the core queries.
+          (apply vector (format "select %d as filter_index, * from (%s) where id <= %d" idx sql max-row-id) sql-args)))
       active-filters)))
 
 (defn execute-active-filters
@@ -197,8 +201,9 @@
   (let [stereotype (stereotype-filter f)]
     (->ActiveFilterState stereotype f page-size
       (or override-quota limit Integer/MAX_VALUE)
-      (pick-max-row-id stereotype table-target-ids)
-      (or until Long/MAX_VALUE))))
+      Long/MAX_VALUE
+      (or until Long/MAX_VALUE)
+      (pick-max-row-id stereotype table-target-ids))))
 
 (defn next-active-filters
   [active-filters prev-page-stats]
