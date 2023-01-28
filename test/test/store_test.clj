@@ -2,18 +2,15 @@
   (:require
     [clojure.string :as str]
     [clojure.test :refer :all]
-    [me.untethr.nostr.common.domain :as domain]
     [me.untethr.nostr.common.json-facade :as json-facade]
     [me.untethr.nostr.common.metrics :as metrics]
-    [me.untethr.nostr.query :as query]
     [me.untethr.nostr.query.engine :as engine]
     [me.untethr.nostr.write-thread :as write-thread]
     [test.support :as support]
     [me.untethr.nostr.common.store :as store]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs])
-  (:import (java.util.concurrent CountDownLatch TimeUnit)
-           (javax.sql DataSource)))
+  (:import (java.util.concurrent CountDownLatch TimeUnit)))
 
 (deftest pragma-test
   (support/with-memory-db-new-schema [db]
@@ -169,6 +166,9 @@
           (is (= [raw-e] fetched)))))))
 
 (deftest many-followers-regression-test
+  #_(let [x (write-thread/est-backlog-size)]
+      (when-not (zero? x)
+        (throw (ex-info "backlog?" {:x x}))))
   (support/with-regression-data [data-vec]
     (support/with-memory-db-new-schema [db-cxn]
       (support/with-memory-db-kv-schema [db-kv-cxn]
@@ -197,4 +197,13 @@
                       [(engine/init-active-filter
                          {:#p ["08e48b610cf0d0343c582ad56a23277f13ab9c8d3626c7fe17e323f50fa2b86a"]})]))]
               (is (= ["0952a6326b529b5b6ff66d3778e68f40d4793bdb5b474eaf70e54c8f3d9a22f3"]
-                    result-event-ids)))))))))
+                    result-event-ids))))
+          (let [fut (future
+                      (loop []
+                        (when (not (Thread/interrupted))
+                          (when (not (zero? (write-thread/est-backlog-size)))
+                            (Thread/sleep 100)
+                            (recur)))))]
+            (when (= :timeout (deref fut 5000 :timeout))
+              (future-cancel fut)
+              (is false "couldn't drain write thread"))))))))

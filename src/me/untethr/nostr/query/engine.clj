@@ -2,6 +2,7 @@
   (:require
     [clojure.string :as str]
     [me.untethr.nostr.common.domain :as domain]
+    [me.untethr.nostr.common.validation :as validation]
     [me.untethr.nostr.query :as legacy-query]
     [me.untethr.nostr.query.e-or-p-based :as e-or-p-based]
     [me.untethr.nostr.query.kind-based :as kind-based]
@@ -18,10 +19,27 @@
   ;; in the query results.
   ;; cursor-created-at is inclusive as well (but of course query will remove
   ;; rows with matching created-ats with rowids that exceed cursor-row-id)
-  [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at])
+  [stereotype
+   the-filter
+   page-size
+   remaining-quota
+   cursor-row-id
+   cursor-created-at])
 
 (defrecord ActiveFilterPageStats
   [num-results min-seen-row-id min-seen-created-at])
+
+(defn- contains-any-prefix-queries?
+  [{:keys [ids authors] :as _the-filter}]
+  (not
+    (and
+      (every? validation/hex-str-64? ids)
+      (every? validation/hex-str-64? authors))))
+
+;; by default - false ... we'll support prefix queries for reactive
+;;  results but not for backfilling ... for now.  we should log typical
+;;  usages and evaluate performance cost of supporting this for fulfillment:
+(def ^:dynamic *support-prefix-queries?* false)
 
 (defn- stereotype-filter
   [{:keys [ids kinds authors] _limit :limit e# :#e p# :#p :as the-filter}]
@@ -30,39 +48,44 @@
   {:post [(#{:kinds-only :pubkeys-only :e-tags-only :p-tags-only
              :pubkeys-and-kinds-only :e-tags-and-kinds-only :p-tags-and-kinds-only
              :generic-unoptimized} %)]}
-  (let [num-ids (count ids)
-        num-kinds (count kinds)
-        num-authors (count authors)
-        num-#e (count e#)
-        num-#p (count p#)
-        generic-tags (query/->non-e-or-p-generic-tags the-filter)
-        num-generic-tags (transduce (comp (map second) (map count)) + 0 generic-tags)]
-    (cond
-      ;; -- single attr only queries --
-      (and (pos? num-kinds)
-        (every? zero? [num-ids num-authors num-#e num-#p num-generic-tags]))
-      :kinds-only
-      (and (pos? num-authors)
-        (every? zero? [num-ids num-kinds num-#e num-#p num-generic-tags]))
-      :pubkeys-only
-      (and (pos? num-#e)
-        (every? zero? [num-ids num-kinds num-authors num-#p num-generic-tags]))
-      :e-tags-only
-      (and (pos? num-#p)
-        (every? zero? [num-ids num-kinds num-authors num-#e num-generic-tags]))
-      :p-tags-only
-      ;; -- common pair attr queries --
-      (and (pos? num-kinds) (pos? num-authors)
-        (every? zero? [num-ids num-#e num-#p num-generic-tags]))
-      :pubkeys-and-kinds-only
-      (and (pos? num-kinds) (pos? num-#e)
-        (every? zero? [num-ids num-authors num-#p num-generic-tags]))
-      :e-tags-and-kinds-only
-      (and (pos? num-kinds) (pos? num-#p)
-        (every? zero? [num-ids num-authors num-#e num-generic-tags]))
-      :p-tags-and-kinds-only
-      :else ;; non-optimized path
-      :generic-unoptimized)))
+  (if (and *support-prefix-queries?*
+        (contains-any-prefix-queries? the-filter))
+    ;; if there are any prefix queries present, we'll shortcut b/c denormalized
+    ;;  tag tables are not (yet?) indexed to support prefix queries.
+    :generic-unoptimized
+    (let [num-ids (count ids)
+          num-kinds (count kinds)
+          num-authors (count authors)
+          num-#e (count e#)
+          num-#p (count p#)
+          generic-tags (query/->non-e-or-p-generic-tags the-filter)
+          num-generic-tags (transduce (comp (map second) (map count)) + 0 generic-tags)]
+      (cond
+        ;; -- single attr only queries --
+        (and (pos? num-kinds)
+          (every? zero? [num-ids num-authors num-#e num-#p num-generic-tags]))
+        :kinds-only
+        (and (pos? num-authors)
+          (every? zero? [num-ids num-kinds num-#e num-#p num-generic-tags]))
+        :pubkeys-only
+        (and (pos? num-#e)
+          (every? zero? [num-ids num-kinds num-authors num-#p num-generic-tags]))
+        :e-tags-only
+        (and (pos? num-#p)
+          (every? zero? [num-ids num-kinds num-authors num-#e num-generic-tags]))
+        :p-tags-only
+        ;; -- common pair attr queries --
+        (and (pos? num-kinds) (pos? num-authors)
+          (every? zero? [num-ids num-#e num-#p num-generic-tags]))
+        :pubkeys-and-kinds-only
+        (and (pos? num-kinds) (pos? num-#e)
+          (every? zero? [num-ids num-authors num-#p num-generic-tags]))
+        :e-tags-and-kinds-only
+        (and (pos? num-kinds) (pos? num-#p)
+          (every? zero? [num-ids num-authors num-#e num-generic-tags]))
+        :p-tags-and-kinds-only
+        :else ;; non-optimized path
+        :generic-unoptimized))))
 
 (defn stereotyped-filter->query
   [stereotype
@@ -123,7 +146,7 @@
     (stereotype-filter the-filter)
     the-filter more))
 
-(defn- make-union-query
+(defn- make-union-all-query
   [multiple-sql-params]
   (apply vector
     (str/join " union all " (map first multiple-sql-params))
@@ -132,7 +155,7 @@
 (defn active-filters->query
   [active-filters]
   {:pre [(not-empty active-filters)]}
-  (make-union-query
+  (make-union-all-query
     (map-indexed
       (fn [idx {:keys [stereotype the-filter page-size remaining-quota cursor-row-id cursor-created-at] :as _active-filter}]
         (let [[sql & sql-args] (stereotyped-filter->query stereotype the-filter
@@ -144,8 +167,9 @@
 
 (defn execute-active-filters
   [read-db active-filters]
-  (jdbc/execute! read-db (active-filters->query active-filters)
-    {:builder-fn rs/as-unqualified-lower-maps}))
+  (let [q (active-filters->query active-filters)]
+    (jdbc/execute! read-db q
+      {:builder-fn rs/as-unqualified-lower-maps})))
 
 (defn- pick-max-row-id
   [stereotype max-row-ids]

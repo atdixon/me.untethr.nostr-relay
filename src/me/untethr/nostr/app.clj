@@ -936,7 +936,7 @@
                   #(subscribe/num-filters-prefixes subs-atom)
                   #(subscribe/num-firehose-filters subs-atom)
                   #(fulfill/num-active-fulfillments fulfill-atom)
-                  #(write-thread/run-async!-backlog-size))
+                  #(write-thread/est-backlog-size))
         db-cxns (init-db-cxns! conf metrics)
         ;; we'll want a perptual single connection for writes which we must
         ;; absolutely ensure we leverage from a single writer thread -- and

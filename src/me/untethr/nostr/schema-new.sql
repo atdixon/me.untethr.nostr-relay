@@ -98,8 +98,10 @@ create table if not exists channels
 -- Support id and pubkey prefix queries:
 --  Note that there just isn't a way to get a pagination / sort with limit on created_at
 --  here:
-create index if not exists idx_event_id_created_at on n_events (deleted_, event_id collate nocase);
-create index if not exists idx_event_pubkey_created_at on n_events (deleted_, pubkey collate nocase);
+drop index if exists idx_event_id_created_at;
+create index if not exists idx_event_id_ on n_events (deleted_, event_id collate nocase);
+drop index if exists idx_event_pubkey_created_at;
+create index if not exists idx_event_pubkey_ on n_events (deleted_, pubkey collate nocase);
 -- Support kind in (?,...) ... order by created_at ... limit ...:
 create index if not exists idx_event_kind_created_at on n_events (kind, deleted_, created_at);
 -- Support pubkey in (?,...) ... order by created_at ... limit ...:
@@ -108,7 +110,7 @@ create index if not exists idx_event_pubkey_created_at on n_events (pubkey, dele
 create index if not exists idx_event_pubkey_kind_created_at on n_events (pubkey, kind, deleted_, created_at);
 -- Support trigger deletion of kind 0, 3 and kind [10000, 19999] events.
 create index if not exists idx_kind_pubkey on n_events (kind, pubkey, deleted_);
--- Support global timeline queries, say.
+-- Support global timeline queries, say. (Also support getting max created_at in db, etc...)
 create index if not exists idx_event_created_at on n_events (deleted_, created_at);
 --
 -- Support #e in (?,...) ... order by created_at ... limit ...:

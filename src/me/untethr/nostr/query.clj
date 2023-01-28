@@ -69,6 +69,20 @@
   [the-filter]
   (select-keys the-filter common/allow-filter-tag-queries-sans-e-and-p-set))
 
+(defn- create-query-params-vec
+  [q base-params use-limit]
+  (if (some? use-limit)
+    (apply vector (str q " order by v.created_at desc, v.id desc limit ?") (conj base-params use-limit))
+    (apply vector q base-params)))
+
+(defn- make-union-query
+  [multiple-sql-params]
+  (apply vector
+    (str "select * from ("
+      (str/join ") union select * from (" (map first multiple-sql-params))
+      ")")
+    (mapcat rest multiple-sql-params)))
+
 (defn generic-filter->query-new
   [cols-str {:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter}
    & {:keys [endcap-row-id endcap-created-at override-limit]}]
@@ -92,17 +106,41 @@
             :else
             (format "select %s from %s cross join n_events v where %s and %s"
               cols-str join-clause join-expr base-expr))
-        extra-clauses [(str
-                         "v.deleted_ = 0"
-                         " and v.created_at < " (dec endcap-created-at)
-                         " or  (v.created_at = " endcap-created-at " and "
-                         #_... "v.id <= " endcap-row-id ")")]
-        q (str q (if (empty? base-expr) " where " " and ") (str/join " and " extra-clauses))
-        q (if (empty? join-clause) q (str q " group by v.id")) ;; when joining don't produce duplicates
-        use-limit (or override-limit limit)]
+        ;; note: ultimately if we intend to use prepared queries here, we'll want
+        ;; to parameterize (?) instead of sitch these values.
+        ;; the 0 and 1 here will used to ultimately produce union query of this form:
+        ;;
+        ;;	(select * from
+        ;;	  (select * from
+        ;;			(select v.id, v.event_id, v.created_at from n_events v where v.deleted_ = 0
+        ;;       and v.created_at < 9217846743344100728 order by v.created_at desc, v.id desc limit 25)
+        ;;		 union
+        ;;		 select * from
+        ;;			(select v.id, v.event_id, v.created_at from n_events v where v.deleted_ = 0
+        ;;        and v.created_at = 9217846743344100729 and v.id <= 3867 order by v.created_at desc, v.id desc limit 25))
+        ;;		order by created_at desc, id desc limit 25);
+        ;;
+        ;; Ideally we'd do this with an OR clause in a single query but sqlite doesn't pick
+        ;;   the right indices in this case so the union is exorbitantly faster (low millis vs multi-second)
+        ;;
+        extra-clauses0 [(str "v.deleted_ = 0 and v.created_at < " (dec endcap-created-at))]
+        extra-clauses1 [(str "v.deleted_ = 0 and v.created_at = " endcap-created-at
+                          " and v.id <= " endcap-row-id)]
+        q0 (str q (if (empty? base-expr) " where " " and ") (str/join " and " extra-clauses0))
+        q1 (str q (if (empty? base-expr) " where " " and ") (str/join " and " extra-clauses1))
+        q0 (if (empty? join-clause) q0 (str q0 " group by v.id")) ;; when joining don't produce duplicates
+        q1 (if (empty? join-clause) q1 (str q1 " group by v.id")) ;; when joining don't produce duplicates
+        use-limit (or override-limit limit)
+        qp0 (create-query-params-vec q0 base-params use-limit)
+        qp1 (create-query-params-vec q1 base-params use-limit)
+        q-union (make-union-query [qp0 qp1])]
     (if (some? use-limit)
-      (apply vector (str q " order by v.created_at desc, v.id desc limit ?") (conj base-params use-limit))
-      (apply vector q base-params))))
+      (let [[sql-str & sql-args] q-union]
+        (->
+          [(str "select * from (" sql-str ") order by created_at desc, id desc limit ?")]
+          (into sql-args)
+          (conj use-limit)))
+      q-union)))
 
 (defn generic-filter->query
   [{:keys [ids kinds since until authors limit] e# :#e p# :#p :as filter} & {:keys [target-row-id]}]

@@ -13,7 +13,8 @@
            (java.sql Connection)
            (java.time Duration)
            (java.util.concurrent Executors RejectedExecutionException ScheduledExecutorService)
-           (javax.sql DataSource)))
+           (javax.sql DataSource)
+           (org.sqlite SQLiteErrorCode SQLiteException)))
 
 (defn create-single-thread-executor
   ^ScheduledExecutorService []
@@ -42,7 +43,8 @@
 (defn get-singleton-connection!
   ^Connection [{:keys [^DataSource writeable-datasource
                        writeable-connection-singleton-atom] :as _db-cxns}]
-  {:post [(instance? Connection %)]}
+  {:pre [(some? writeable-connection-singleton-atom)]
+   :post [(instance? Connection %)]}
   (or @writeable-connection-singleton-atom
     (reset! writeable-connection-singleton-atom
       ;; worth noting this will hang if we already have checked-out a cxn.
@@ -70,7 +72,8 @@
 (defn get-singleton-kv-connection!
   ^Connection [{:keys [^DataSource writeable-kv-datasource
                        writeable-kv-connection-singleton-atom] :as _db-cxns}]
-  {:post [(instance? Connection %)]}
+  {:pre [(some? writeable-kv-connection-singleton-atom)]
+   :post [(instance? Connection %)]}
   (or @writeable-kv-connection-singleton-atom
     (reset! writeable-kv-connection-singleton-atom
       ;; worth noting this will hang if we already have checked-out a cxn.
@@ -171,11 +174,11 @@
 
 (defonce commit-enqueued?-vol (volatile! false))
 (defonce checkpoint-enqueued?-vol (volatile! false))
-(defonce run-async!-backlog-size-atom (atom 0))
+(defonce est-backlog-size-atom (atom 0))
 
-(defn run-async!-backlog-size
+(defn est-backlog-size ;; doesn't include outstanding scheduled tasks and some tests relay on this
   []
-  @run-async!-backlog-size-atom)
+  @est-backlog-size-atom)
 
 (defn add-callback!
   [^ListenableFuture fut success-fn failure-fn]
@@ -189,72 +192,116 @@
     ;; for now, run listeners on our single thread executor
     single-event-thread))
 
+(defn- db-table-locked-exception?
+  [^SQLiteException e]
+  (identical? SQLiteErrorCode/SQLITE_LOCKED (.getResultCode e)))
+
 (defn- enq-checkpoint!
   [metrics db-cxns]
-  (.submit single-event-thread
-    (common/wrap-runnable-handle-uncaught-exc
-      "enq-checkpoint!/0"
-      (fn []
-        (let [start-ns (System/nanoTime)]
-          (let [{:keys [busy log checkpointed] :as checkpoint-result}
-                (metrics/time-db-checkpoint! metrics
-                  (store/checkpoint! (get-singleton-connection! db-cxns)))]
-            (log/log log/*logger-factory* "db.checkpoint" :info nil
-              (str "[index] " checkpoint-result))
-            (if (zero? busy)
-              (metrics/mark-db-checkpoint-full! metrics)
-              (metrics/mark-db-checkpoint-partial! metrics))
-            (metrics/db-checkpoint-pages! metrics checkpointed))
-          (log/debugf "checkpointed db (%d ms)"
-            (util/nanos-to-millis (- (System/nanoTime) start-ns)))))))
-  (.submit single-event-thread
-    (common/wrap-runnable-handle-uncaught-exc
-      "enq-checkpoint!/1"
-      (fn []
-        (vreset! checkpoint-enqueued?-vol false)
-        (let [start-ns (System/nanoTime)]
-          (let [{:keys [busy log checkpointed] :as checkpoint-result}
-                (metrics/time-db-kv-checkpoint! metrics
-                  (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
-            (log/log log/*logger-factory* "db.checkpoint" :info nil
-              (str "[kv] " checkpoint-result))
-            (if (zero? busy)
-              (metrics/mark-db-kv-checkpoint-full! metrics)
-              (metrics/mark-db-kv-checkpoint-partial! metrics))
-            (metrics/db-kv-checkpoint-pages! metrics checkpointed))
-          (log/debugf "checkpointed kv db (%d ms)"
-            (util/nanos-to-millis (- (System/nanoTime) start-ns))))))))
+  (try
+    (swap! est-backlog-size-atom inc)
+    (.submit single-event-thread
+      (common/wrap-runnable-handle-uncaught-exc
+        "enq-checkpoint!/0"
+        (fn []
+          (swap! est-backlog-size-atom dec)
+          (try
+            (let [start-ns (System/nanoTime)]
+              (let [{:keys [busy log checkpointed] :as checkpoint-result}
+                    (metrics/time-db-checkpoint! metrics
+                      (store/checkpoint! (get-singleton-connection! db-cxns)))]
+                (log/log log/*logger-factory* "db.checkpoint" :info nil
+                  (str "[index] " checkpoint-result))
+                (if (zero? busy)
+                  (metrics/mark-db-checkpoint-full! metrics)
+                  (metrics/mark-db-checkpoint-partial! metrics))
+                (metrics/db-checkpoint-pages! metrics checkpointed))
+              (log/debugf "checkpointed db (%d ms)"
+                (util/nanos-to-millis (- (System/nanoTime) start-ns))))
+            (catch SQLiteException e
+              (cond
+                (db-table-locked-exception? e)
+                (log/warn "got table locked exception while checkpointing index db")
+                :else (throw e)))))))
+    (catch Throwable t
+      ;; ... RejectedExecutionException?
+      (swap! est-backlog-size-atom dec)
+      (throw t)))
+  (try
+    (swap! est-backlog-size-atom inc)
+    (.submit single-event-thread
+      (common/wrap-runnable-handle-uncaught-exc
+        "enq-checkpoint!/1"
+        (fn []
+          (swap! est-backlog-size-atom dec)
+          (vreset! checkpoint-enqueued?-vol false)
+          (try
+            (let [start-ns (System/nanoTime)]
+              (let [{:keys [busy log checkpointed] :as checkpoint-result}
+                    (metrics/time-db-kv-checkpoint! metrics
+                      (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
+                (log/log log/*logger-factory* "db.checkpoint" :info nil
+                  (str "[kv] " checkpoint-result))
+                (if (zero? busy)
+                  (metrics/mark-db-kv-checkpoint-full! metrics)
+                  (metrics/mark-db-kv-checkpoint-partial! metrics))
+                (metrics/db-kv-checkpoint-pages! metrics checkpointed))
+              (log/debugf "checkpointed kv db (%d ms)"
+                (util/nanos-to-millis (- (System/nanoTime) start-ns))))
+            (catch SQLiteException e
+              (cond
+                (db-table-locked-exception? e)
+                (log/warn "got table locked exception while checkpointing kv db")
+                :else (throw e)))))))
+    (catch Throwable t
+      ;; ... RejectedExecutionException?
+      (swap! est-backlog-size-atom dec)
+      (throw t))))
 
 (defn- enq-commit!
   ;; note: we expect a singleton db connection and auto-commit = false
   [metrics db-cxns]
-  (.submit single-event-thread
-    (common/wrap-runnable-handle-uncaught-exc
-      "enq-commit!/0"
-      (fn []
-        (let [use-cxn (get-singleton-connection! db-cxns)]
-          (when-not (.getAutoCommit use-cxn)
-            (metrics/time-commit! metrics
-              (.commit use-cxn)))))))
-  (.submit single-event-thread
-    (common/wrap-runnable-handle-uncaught-exc
-      "enq-commit!/1"
-      (fn []
-        (vreset! commit-enqueued?-vol false)
-        (let [use-cxn (get-singleton-kv-connection! db-cxns)]
-          (when-not (.getAutoCommit use-cxn)
-            (metrics/time-commit-kv! metrics
-              (.commit use-cxn))))
-        (when-not @checkpoint-enqueued?-vol
-          (enq-checkpoint! metrics db-cxns)
-          (vreset! checkpoint-enqueued?-vol true))))))
+  (try
+    (swap! est-backlog-size-atom inc)
+    (.submit single-event-thread
+      (common/wrap-runnable-handle-uncaught-exc
+        "enq-commit!/0"
+        (fn []
+          (swap! est-backlog-size-atom dec)
+          (let [use-cxn (get-singleton-connection! db-cxns)]
+            (when-not (.getAutoCommit use-cxn)
+              (metrics/time-commit! metrics
+                (.commit use-cxn)))))))
+    (catch Throwable t
+      ;; ... RejectedExecutionException?
+      (swap! est-backlog-size-atom dec)
+      (throw t)))
+  (try
+    (swap! est-backlog-size-atom inc)
+    (.submit single-event-thread
+      (common/wrap-runnable-handle-uncaught-exc
+        "enq-commit!/1"
+        (fn []
+          (swap! est-backlog-size-atom dec)
+          (vreset! commit-enqueued?-vol false)
+          (let [use-cxn (get-singleton-kv-connection! db-cxns)]
+            (when-not (.getAutoCommit use-cxn)
+              (metrics/time-commit-kv! metrics
+                (.commit use-cxn))))
+          (when-not @checkpoint-enqueued?-vol
+            (enq-checkpoint! metrics db-cxns)
+            (vreset! checkpoint-enqueued?-vol true)))))
+    (catch Throwable t
+      ;; ... RejectedExecutionException?
+      (swap! est-backlog-size-atom dec)
+      (throw t))))
 
 (defn run-async!
   ^ListenableFuture [metrics db-cxns task-fn success-fn failure-fn]
   {:pre [(fn? task-fn) (fn? success-fn) (fn? failure-fn)]}
   (doto
     (try
-      (swap! run-async!-backlog-size-atom inc)
+      (swap! est-backlog-size-atom inc)
       (.submit single-event-thread
         (common/wrap-callable-handle-uncaught-exc
           "run-async!/0"
@@ -264,7 +311,7 @@
                 (get-singleton-connection! db-cxns)
                 (get-singleton-kv-connection! db-cxns))))))
       (catch RejectedExecutionException e
-        (swap! run-async!-backlog-size-atom dec)
+        (swap! est-backlog-size-atom dec)
         (throw (ex-info "unexpected write thread rejection" {} e))))
     ;; for now, after every write we'll *enqueue* a full checkpoint; if
     ;; there's other write work behind us our checkpoint won't delay any
@@ -273,12 +320,12 @@
     ;;  disabled for now -- using autocheckpointing:
     (add-callback!
       (fn [_x]
-        (swap! run-async!-backlog-size-atom dec)
+        (swap! est-backlog-size-atom dec)
         (when-not @commit-enqueued?-vol
           (enq-commit! metrics db-cxns)
           (vreset! commit-enqueued?-vol true)))
       (fn [_]
-        (swap! run-async!-backlog-size-atom dec)))
+        (swap! est-backlog-size-atom dec)))
     (add-callback! success-fn failure-fn)))
 
 ;; --

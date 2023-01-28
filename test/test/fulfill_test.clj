@@ -47,9 +47,13 @@
         (let [results-atom (atom [])
               eose-atom (atom 0)
               fulfill-atom (atom (fulfill/create-empty-registry))
-              ^Future f (fulfill/submit-use-batching! (metrics/create-metrics)
+              ^Future f (fulfill/submit-use-batching!
+                          (metrics/create-metrics)
                           (domain/init-database-cxns db db db-kv db-kv)
-                          fulfill-atom "chan-id" "req-id" [{:since 110} {:since 120}]
+                          fulfill-atom
+                          "chan-id"
+                          "req-id"
+                          [{:since 110} {:since 120}]
                           (domain/->TableMaxRowIds 5 -1 -1 -1)
                           (fn [res]
                             (swap! results-atom conj res))

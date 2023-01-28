@@ -142,16 +142,15 @@
   ;; @see https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.761/doc/getting-started#plan--reducing-result-sets
   ;; consider alternative: look into if we could somehow truly batch websocket events
   ;; back to clients?
-  (let [q (engine/active-filters->query active-filters)
-        q-results (jdbc/execute! (:readonly-datasource db-cxns) q
-                    {:builder-fn rs/as-unqualified-lower-maps})
-        page-stats (engine/calculate-page-stats q-results)
-        ;; note when we have multiple filters we might produce duplicate ids
-        ;; across pages ... at least for each batch we will de-duplicate here
-        ;; plus we use (count page-of-ids) to manage quota so we need this
-        ;; distinct here:
-        page-of-ids (vec (distinct (map :event_id q-results)))]
-    (metrics/time-fulfillment! metrics
+  (metrics/time-fulfillment! metrics
+    (let [q-results (engine/execute-active-filters
+                      (:readonly-datasource db-cxns) active-filters)
+          page-stats (engine/calculate-page-stats q-results)
+          ;; note when we have multiple filters we might produce duplicate ids
+          ;; across pages ... at least for each batch we will de-duplicate here
+          ;; plus we use (count page-of-ids) to manage quota so we need this
+          ;; distinct here:
+          page-of-ids (vec (distinct (map :event_id q-results)))]
       (transduce
         ;; note: if observer throws exception we catch below and for
         ;; now call it unexpected

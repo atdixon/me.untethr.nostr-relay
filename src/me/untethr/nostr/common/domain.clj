@@ -16,6 +16,8 @@
 (defn init-database-cxns
   [readonly-datasource writeable-datasource readonly-kv-datasource
    writeable-kv-datasource]
+  {:pre [(some? readonly-datasource) (some? writeable-datasource)
+         (some? readonly-kv-datasource) (some? writeable-kv-datasource)]}
   (->DatabaseCxns readonly-datasource writeable-datasource
     readonly-kv-datasource writeable-kv-datasource (atom nil) (atom nil)))
 

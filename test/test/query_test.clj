@@ -22,16 +22,16 @@
     (or (store/max-event-db-id-e-tags db) -1)
     (or (store/max-event-db-id-x-tags db) -1)))
 
-(defn query-all-pages
+(defn query-all-pages-lazy
   ([db filters page-size]
    (let [table-max-row-ids (capture-table-max-ids db)]
-     (query-all-pages db filters page-size table-max-row-ids)))
+     (query-all-pages-lazy db filters page-size table-max-row-ids)))
   ([db filters page-size ^TableMaxRowIds table-max-row-ids]
    (let [active-filters (mapv
                           #(engine/init-active-filter %
                              :table-target-ids table-max-row-ids
                              :page-size page-size) filters)]
-     (mapv
+     (map ;; lazy! client can "consume" as many pages as they like
        (fn [[{:keys [_ active-filters]}
              {:keys [prev-results _]}]]
          {:active-filters active-filters
@@ -181,9 +181,9 @@
           (is (<= (count expected-results) (count query-results))
             (pr-str [filters query-results])))
         ;; with pagination... try all pages sizes...
-        (dotimes [page-size 1]
+        (dotimes [page-size 10]
           (doseq [[filters expected-results] test-data-filters
-                  :let [pages (query-all-pages db filters (inc page-size))
+                  :let [pages (query-all-pages-lazy db filters (inc page-size))
                         query-results (vec
                                         (mapcat #(map :event_id (:results %)) pages))]]
             (is (= (set expected-results)
@@ -221,7 +221,7 @@
       (let [table-max-ids (capture-table-max-ids db)
             _ (is (> (:p-tags-id table-max-ids)
                     (:n-events-id table-max-ids)))
-            acc (query-all-pages db [{:#p ["p1" "p9" "p11"]}] 1)
+            acc (query-all-pages-lazy db [{:#p ["p1" "p9" "p11"]}] 1)
             results (vec
                       (mapcat #(map :event_id (:results %)) acc))]
         (is (= (mapv #(str "P" %) (range 99 -1 -1)) results)))
@@ -229,13 +229,13 @@
       (let [table-max-ids (capture-table-max-ids db)
             _ (is (> (:e-tags-id table-max-ids)
                     (:n-events-id table-max-ids)))
-            acc (query-all-pages db [{:#e ["e1" "e9" "e11"]}] 1
+            acc (query-all-pages-lazy db [{:#e ["e1" "e9" "e11"]}] 1
                   table-max-ids)
             results (vec
                       (mapcat #(map :event_id (:results %)) acc))]
         (is (= (mapv #(str "E" %) (range 99 -1 -1)) results)))
       ;;
-      (let [pages (query-all-pages db
+      (let [pages (query-all-pages-lazy db
                     [{:#p ["p1" "p9" "p11"]}
                      {:#e ["e1" "e9" "e11"]}]
                     1)
@@ -247,19 +247,134 @@
                    (map #(str "E" %) (range 99 -1 -1))))
               results))))))
 
-(deftest another-regression-test
+(deftest another-row-id-management-regression-test
   (support/with-memory-db-new-schema [cxn]
     (support/with-memory-db-kv-schema [kv-cxn]
       ;; the regression: if we have created_at that doesn't match order of rowids
       ;;   our pagination strategy ought to still work
       (store/index-and-store-event!
-        cxn kv-cxn {:id "A" :pubkey "aa" :created_at 10 :kind 1 :tags []} "<e...>")
+        cxn kv-cxn {:id "A" :pubkey "aa" :created_at 10 :kind 1
+                    :tags [["p" "tp0"]
+                           ["p" "tp1"]
+                           ["e" "te0"]]} "<e...>")
       (store/index-and-store-event!
-        cxn kv-cxn {:id "B" :pubkey "aa" :created_at 30 :kind 1 :tags []} "<e...>")
+        cxn kv-cxn {:id "B0" :pubkey "bb" :created_at 30 :kind 1
+                    :tags [["p" "tp0"]
+                           ["e" "te0"]
+                           ["p" "tp1"]]} "<e...>")
       (store/index-and-store-event!
-        cxn kv-cxn {:id "C" :pubkey "aa" :created_at 20 :kind 1 :tags []} "<e...>")
-      (let [pages (query-all-pages cxn [{}] 1)
+        cxn kv-cxn {:id "B1" :pubkey "bbb" :created_at 30 :kind 1
+                    :tags [["p" "tp0"]
+                           ["e" "te0"]
+                           ["p" "tp1"]]} "<e...>")
+      (store/index-and-store-event!
+        cxn kv-cxn {:id "B2" :pubkey "bbbb" :created_at 30 :kind 1
+                    :tags [["p" "tp0"]
+                           ["e" "te0"]
+                           ["p" "tp1"]]} "<e...>")
+      (store/index-and-store-event!
+        cxn kv-cxn {:id "C0" :pubkey "cc" :created_at 20 :kind 1
+                    :tags [["e" "te0"]
+                           ["p" "tp0"]]} "<e...>")
+      (store/index-and-store-event!
+        cxn kv-cxn {:id "C1" :pubkey "ccc" :created_at 20 :kind 1
+                    :tags [["e" "te0"]
+                           ["p" "tp0"]]} "<e...>")
+      (store/index-and-store-event!
+        cxn kv-cxn {:id "C2" :pubkey "cccc" :created_at 20 :kind 1
+                    :tags [["e" "te0"]
+                           ["p" "tp0"]]} "<e...>")
+
+      ;; now, test with all the optimized query stereotypes:
+
+      (let [pages (query-all-pages-lazy cxn [{}] 1)
             results (vec
                       (mapcat #(map :event_id (:results %)) pages))]
         ;; note: in temporal order!
-        (is (= ["B" "C" "A"] results))))))
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:kinds [1]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:authors ["aa" "bb" "cc"
+                                                        "bbb" "bbbb"
+                                                        "ccc" "cccc"]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:authors ["aa" "bb" "cc"
+                                                        "bbb" "bbbb"
+                                                        "ccc" "cccc"]
+                                              :kinds [1]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:#p ["tp0"]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:#p ["tp0"] :kinds [1]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:#e ["te0"]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results)))
+      (let [pages (query-all-pages-lazy cxn [{:#e ["te0"] :kinds [1]}] 1)
+            results (vec
+                      (mapcat #(map :event_id (:results %)) pages))]
+        ;; note: in temporal order!
+        (is (= ["B2" "B1" "B0" "C2" "C1" "C0" "A"] results))))))
+
+(deftest contains-any-prefix-queries?-test
+  []
+  (is (not (#'engine/contains-any-prefix-queries? {})))
+  (is (not (#'engine/contains-any-prefix-queries? {:ids []})))
+  (is (not (#'engine/contains-any-prefix-queries? {:authors [(support/random-hex-str)]})))
+  (is (not (#'engine/contains-any-prefix-queries? {:authors [(support/random-hex-str)
+                                                             (support/random-hex-str)]
+                                                   :ids [(support/random-hex-str)]})))
+  (is (#'engine/contains-any-prefix-queries? {:authors [(support/random-hex-str)
+                                                        (support/random-hex-str 63)]
+                                              :ids [(support/random-hex-str)]}))
+  (is (#'engine/contains-any-prefix-queries? {:authors [(support/random-hex-str)
+                                                        (support/random-hex-str 1)]
+                                              :ids [(support/random-hex-str)]}))
+  (is (#'engine/contains-any-prefix-queries? {:authors [(support/random-hex-str)
+                                                        (support/random-hex-str)]
+                                              :ids [(support/random-hex-str 1)]})))
+
+(deftest basic-prefix-query-test
+  (binding [engine/*support-prefix-queries?* true]
+    (support/with-memory-db-new-schema [cxn]
+      (support/with-memory-db-kv-schema [kv-cxn]
+        ;; the regression: if we have created_at that doesn't match order of rowids
+        ;;   our pagination strategy ought to still work
+        (store/index-and-store-event!
+          cxn kv-cxn {:id "QAAA" :pubkey "qaa" :created_at 10 :kind 1
+                      :tags [["p" "tp0"]
+                             ["p" "tp1"]
+                             ["e" "te0"]]} "<e...>")
+        (store/index-and-store-event!
+          cxn kv-cxn {:id "QBBB" :pubkey "qbb" :created_at 5 :kind 1
+                      :tags [["p" "tp0"]
+                             ["p" "tp1"]
+                             ["e" "te0"]]} "<e...>")
+        (let [pages (query-all-pages-lazy cxn [{:ids ["Q"]}] 1)
+              results (vec
+                        (mapcat #(map :event_id (:results %)) pages))]
+          ;; note: in temporal order!
+          (is (= ["QAAA" "QBBB"] results)))
+        (let [pages (query-all-pages-lazy cxn [{:authors ["q"]}] 1)
+              results (vec
+                        (mapcat #(map :event_id (:results %)) pages))]
+          ;; note: in temporal order!
+          (is (= ["QAAA" "QBBB"] results)))
+        ))))
