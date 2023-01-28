@@ -196,7 +196,49 @@
   [^SQLiteException e]
   (identical? SQLiteErrorCode/SQLITE_LOCKED (.getResultCode e)))
 
-(defn- enq-checkpoint!
+(defn- synchronous-checkpoint!
+  [metrics db-cxns]
+  (try
+    (let [start-ns (System/nanoTime)]
+      (let [{:keys [busy log checkpointed] :as checkpoint-result}
+            (metrics/time-db-checkpoint! metrics
+              (store/checkpoint! (get-singleton-connection! db-cxns)))]
+        (log/log log/*logger-factory* "db.checkpoint" :info nil
+          (str "[index] " checkpoint-result))
+        (if (zero? busy)
+          (metrics/mark-db-checkpoint-full! metrics)
+          (metrics/mark-db-checkpoint-partial! metrics))
+        (metrics/db-checkpoint-pages! metrics checkpointed))
+      (log/debugf "checkpointed db (%d ms)"
+        (util/nanos-to-millis (- (System/nanoTime) start-ns))))
+    (catch SQLiteException e
+      (cond
+        (db-table-locked-exception? e)
+        (log/warn "got table locked exception while checkpointing index db")
+        :else (throw e)))))
+
+(defn- synchronous-checkpoint-kv!
+  [metrics db-cxns]
+  (try
+    (let [start-ns (System/nanoTime)]
+      (let [{:keys [busy log checkpointed] :as checkpoint-result}
+            (metrics/time-db-kv-checkpoint! metrics
+              (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
+        (log/log log/*logger-factory* "db.checkpoint" :info nil
+          (str "[kv] " checkpoint-result))
+        (if (zero? busy)
+          (metrics/mark-db-kv-checkpoint-full! metrics)
+          (metrics/mark-db-kv-checkpoint-partial! metrics))
+        (metrics/db-kv-checkpoint-pages! metrics checkpointed))
+      (log/debugf "checkpointed kv db (%d ms)"
+        (util/nanos-to-millis (- (System/nanoTime) start-ns))))
+    (catch SQLiteException e
+      (cond
+        (db-table-locked-exception? e)
+        (log/warn "got table locked exception while checkpointing kv db")
+        :else (throw e)))))
+
+#_(defn- ^:deprecated enq-checkpoint!
   [metrics db-cxns]
   (try
     (swap! est-backlog-size-atom inc)
@@ -205,24 +247,7 @@
         "enq-checkpoint!/0"
         (fn []
           (swap! est-backlog-size-atom dec)
-          (try
-            (let [start-ns (System/nanoTime)]
-              (let [{:keys [busy log checkpointed] :as checkpoint-result}
-                    (metrics/time-db-checkpoint! metrics
-                      (store/checkpoint! (get-singleton-connection! db-cxns)))]
-                (log/log log/*logger-factory* "db.checkpoint" :info nil
-                  (str "[index] " checkpoint-result))
-                (if (zero? busy)
-                  (metrics/mark-db-checkpoint-full! metrics)
-                  (metrics/mark-db-checkpoint-partial! metrics))
-                (metrics/db-checkpoint-pages! metrics checkpointed))
-              (log/debugf "checkpointed db (%d ms)"
-                (util/nanos-to-millis (- (System/nanoTime) start-ns))))
-            (catch SQLiteException e
-              (cond
-                (db-table-locked-exception? e)
-                (log/warn "got table locked exception while checkpointing index db")
-                :else (throw e)))))))
+          (synchronous-checkpoint! metrics db-cxns))))
     (catch Throwable t
       ;; ... RejectedExecutionException?
       (swap! est-backlog-size-atom dec)
@@ -235,24 +260,7 @@
         (fn []
           (swap! est-backlog-size-atom dec)
           (vreset! checkpoint-enqueued?-vol false)
-          (try
-            (let [start-ns (System/nanoTime)]
-              (let [{:keys [busy log checkpointed] :as checkpoint-result}
-                    (metrics/time-db-kv-checkpoint! metrics
-                      (store/checkpoint! (get-singleton-kv-connection! db-cxns)))]
-                (log/log log/*logger-factory* "db.checkpoint" :info nil
-                  (str "[kv] " checkpoint-result))
-                (if (zero? busy)
-                  (metrics/mark-db-kv-checkpoint-full! metrics)
-                  (metrics/mark-db-kv-checkpoint-partial! metrics))
-                (metrics/db-kv-checkpoint-pages! metrics checkpointed))
-              (log/debugf "checkpointed kv db (%d ms)"
-                (util/nanos-to-millis (- (System/nanoTime) start-ns))))
-            (catch SQLiteException e
-              (cond
-                (db-table-locked-exception? e)
-                (log/warn "got table locked exception while checkpointing kv db")
-                :else (throw e)))))))
+          (synchronous-checkpoint-kv! metrics db-cxns))))
     (catch Throwable t
       ;; ... RejectedExecutionException?
       (swap! est-backlog-size-atom dec)
@@ -271,7 +279,12 @@
           (let [use-cxn (get-singleton-connection! db-cxns)]
             (when-not (.getAutoCommit use-cxn)
               (metrics/time-commit! metrics
-                (.commit use-cxn)))))))
+                (.commit use-cxn)))
+            ;; we do our checkpoint along with commit - b/c we do not
+            ;; want the db/tables to be locked, which would happen if we
+            ;; otherwise allowed some updates/inserts to occur between
+            ;; commit and checkpoint.
+            (synchronous-checkpoint! metrics db-cxns)))))
     (catch Throwable t
       ;; ... RejectedExecutionException?
       (swap! est-backlog-size-atom dec)
@@ -288,7 +301,12 @@
             (when-not (.getAutoCommit use-cxn)
               (metrics/time-commit-kv! metrics
                 (.commit use-cxn))))
-          (when-not @checkpoint-enqueued?-vol
+          ;; we do our checkpoint along with commit - b/c we do not
+          ;; want the db/tables to be locked, which would happen if we
+          ;; otherwise allowed some updates/inserts to occur between
+          ;; commit and checkpoint.
+          (synchronous-checkpoint-kv! metrics db-cxns)
+          #_(when-not @checkpoint-enqueued?-vol
             (enq-checkpoint! metrics db-cxns)
             (vreset! checkpoint-enqueued?-vol true)))))
     (catch Throwable t

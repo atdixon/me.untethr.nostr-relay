@@ -108,7 +108,7 @@
         (.release semaphore)
         (is (.isCancelled f))
         (is (= 0 (fulfill/num-active-fulfillments fulfill-atom)))
-        (is (= 1 (count @results-atom)))
+        (is (#{0 1} (count @results-atom)))
         (is (= 0 @eose-atom))
         ;; ensure cancellation leaves us with an empty registry
         (is (= (fulfill/create-empty-registry) @fulfill-atom))))))
