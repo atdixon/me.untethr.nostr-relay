@@ -9,7 +9,7 @@ fi
 
 # safety - we want to fail (via set -e) if version.clj doesn't look like it
 # restored from a previous release:
-grep "\"SNAPSHOT\"" src/me/untethr/nostr/version.clj
+grep "\"SNAPSHOT\"" src/me/untethr/nostr/common/version.clj
 
 read -rp 'Version: ' VERSION
 
