@@ -503,8 +503,10 @@
          "  values (?, ?) returning event_id") event-id raw-event]
       {:builder-fn rs/as-unqualified-lower-maps})))
 
-(def ^:private max-tags-per-store-op 20)
-(def ^:private max-tags-per-type 3000) ;; for now just simply quietly crop after 5000
+(def ^:private max-tags-per-store-op 50) ;; if each insert takes 10ms, say, then at 50 here we'll get 500ms total/batch
+;; for now just simply quietly crop after 2500 -- we'll store the entire event obj but we won't index
+;;  beyond 2500 for now:
+(def ^:private max-tags-per-type 2500)
 
 (defn- internal-execute-continuation!
   "Note! whoever calls this must use a transaction or auto-commit or do their own
@@ -514,23 +516,23 @@
            p-tags-insert-batch
            e-tags-insert-batch
            x-tags-insert-batch] :as _prev-continuation}]
-  (with-open [e-tag-insert-prepared (insert-e-tag-new-schema-prepared-stmt tx-or-cxn)
-              p-tag-insert-prepared (insert-p-tag-new-schema-prepared-stmt tx-or-cxn)
-              x-tag-insert-prepared (insert-x-tag-new-schema-prepared-stmt tx-or-cxn)]
-    (domain/->IndexEventContinuation
-      obo-row-id
-      (when-not (empty? p-tags-insert-batch)
-        (let [[immediates leftovers] (split-at max-tags-per-store-op p-tags-insert-batch)]
-          (jdbc/execute-batch! p-tag-insert-prepared immediates)
-          (take max-tags-per-type leftovers)))
-      (when-not (empty? e-tags-insert-batch)
-        (let [[immediates leftovers] (split-at max-tags-per-store-op e-tags-insert-batch)]
-          (jdbc/execute-batch! e-tag-insert-prepared immediates)
-          (take max-tags-per-type leftovers)))
-      (when-not (empty? x-tags-insert-batch)
-        (let [[immediates leftovers] (split-at max-tags-per-store-op x-tags-insert-batch)]
-          (jdbc/execute-batch! x-tag-insert-prepared immediates)
-          (take max-tags-per-type leftovers))))))
+  (domain/->IndexEventContinuation
+    obo-row-id
+    (when-not (empty? p-tags-insert-batch)
+      (let [[immediates leftovers] (split-at max-tags-per-store-op p-tags-insert-batch)]
+        (with-open [prep (insert-p-tag-new-schema-prepared-stmt tx-or-cxn)]
+          (jdbc/execute-batch! prep immediates))
+        (take max-tags-per-type leftovers)))
+    (when-not (empty? e-tags-insert-batch)
+      (let [[immediates leftovers] (split-at max-tags-per-store-op e-tags-insert-batch)]
+        (with-open [prep (insert-e-tag-new-schema-prepared-stmt tx-or-cxn)]
+          (jdbc/execute-batch! prep immediates))
+        (take max-tags-per-type leftovers)))
+    (when-not (empty? x-tags-insert-batch)
+      (let [[immediates leftovers] (split-at max-tags-per-store-op x-tags-insert-batch)]
+        (with-open [prep (insert-x-tag-new-schema-prepared-stmt tx-or-cxn)]
+          (jdbc/execute-batch! prep immediates))
+        (take max-tags-per-type leftovers)))))
 
 (defn internal-store-event-new-schema!-
   [tx-or-cxn channel-id {:keys [id pubkey created_at kind tags] :as _e}]
@@ -615,6 +617,5 @@
      :duplicate)))
 
 (defn continuation!
-  [writeable-cxn _writeable-kv-cxn continuation]
-  (let [tx writeable-cxn]
-    (internal-execute-continuation! tx continuation)))
+  [writeable-tx-or-cxn continuation]
+  (internal-execute-continuation! writeable-tx-or-cxn continuation))

@@ -146,7 +146,7 @@
           (log/error t "while sweeping")
           ;; note: if we'd rethrow - the task would get cancelled
           )))
-    (Duration/ofSeconds 15)
+    (Duration/ofSeconds 30)
     (Duration/ofSeconds sweep-period-seconds)))
 
 (def connection-recycle-period-minutes 15)
@@ -173,7 +173,6 @@
     (Duration/ofMinutes connection-recycle-period-minutes)))
 
 (defonce commit-enqueued?-vol (volatile! false))
-(defonce checkpoint-enqueued?-vol (volatile! false))
 (defonce est-backlog-size-atom (atom 0))
 
 (defn est-backlog-size ;; doesn't include outstanding scheduled tasks and some tests relay on this
@@ -238,34 +237,6 @@
         (log/warn "got table locked exception while checkpointing kv db")
         :else (throw e)))))
 
-#_(defn- ^:deprecated enq-checkpoint!
-  [metrics db-cxns]
-  (try
-    (swap! est-backlog-size-atom inc)
-    (.submit single-event-thread
-      (common/wrap-runnable-handle-uncaught-exc
-        "enq-checkpoint!/0"
-        (fn []
-          (swap! est-backlog-size-atom dec)
-          (synchronous-checkpoint! metrics db-cxns))))
-    (catch Throwable t
-      ;; ... RejectedExecutionException?
-      (swap! est-backlog-size-atom dec)
-      (throw t)))
-  (try
-    (swap! est-backlog-size-atom inc)
-    (.submit single-event-thread
-      (common/wrap-runnable-handle-uncaught-exc
-        "enq-checkpoint!/1"
-        (fn []
-          (swap! est-backlog-size-atom dec)
-          (vreset! checkpoint-enqueued?-vol false)
-          (synchronous-checkpoint-kv! metrics db-cxns))))
-    (catch Throwable t
-      ;; ... RejectedExecutionException?
-      (swap! est-backlog-size-atom dec)
-      (throw t))))
-
 (defn- enq-commit!
   ;; note: we expect a singleton db connection and auto-commit = false
   [metrics db-cxns]
@@ -276,27 +247,16 @@
         "enq-commit!/0"
         (fn []
           (swap! est-backlog-size-atom dec)
+          (vreset! commit-enqueued?-vol false)
           (let [use-cxn (get-singleton-connection! db-cxns)]
             (when-not (.getAutoCommit use-cxn)
               (metrics/time-commit! metrics
-                (.commit use-cxn)))
-            ;; we do our checkpoint along with commit - b/c we do not
-            ;; want the db/tables to be locked, which would happen if we
-            ;; otherwise allowed some updates/inserts to occur between
-            ;; commit and checkpoint.
-            (synchronous-checkpoint! metrics db-cxns)))))
-    (catch Throwable t
-      ;; ... RejectedExecutionException?
-      (swap! est-backlog-size-atom dec)
-      (throw t)))
-  (try
-    (swap! est-backlog-size-atom inc)
-    (.submit single-event-thread
-      (common/wrap-runnable-handle-uncaught-exc
-        "enq-commit!/1"
-        (fn []
-          (swap! est-backlog-size-atom dec)
-          (vreset! commit-enqueued?-vol false)
+                (.commit use-cxn))))
+          ;; we do our checkpoint along with commit - b/c we do not
+          ;; want the db/tables to be locked, which would happen if we
+          ;; otherwise allowed some updates/inserts to occur between
+          ;; commit and checkpoint.
+          (synchronous-checkpoint! metrics db-cxns)
           (let [use-cxn (get-singleton-kv-connection! db-cxns)]
             (when-not (.getAutoCommit use-cxn)
               (metrics/time-commit-kv! metrics
@@ -305,10 +265,7 @@
           ;; want the db/tables to be locked, which would happen if we
           ;; otherwise allowed some updates/inserts to occur between
           ;; commit and checkpoint.
-          (synchronous-checkpoint-kv! metrics db-cxns)
-          #_(when-not @checkpoint-enqueued?-vol
-            (enq-checkpoint! metrics db-cxns)
-            (vreset! checkpoint-enqueued?-vol true)))))
+          (synchronous-checkpoint-kv! metrics db-cxns))))
     (catch Throwable t
       ;; ... RejectedExecutionException?
       (swap! est-backlog-size-atom dec)
@@ -325,6 +282,7 @@
           "run-async!/0"
           (reify Callable
             (call [_this]
+              (swap! est-backlog-size-atom dec)
               (task-fn
                 (get-singleton-connection! db-cxns)
                 (get-singleton-kv-connection! db-cxns))))))
@@ -338,12 +296,11 @@
     ;;  disabled for now -- using autocheckpointing:
     (add-callback!
       (fn [_x]
-        (swap! est-backlog-size-atom dec)
         (when-not @commit-enqueued?-vol
           (enq-commit! metrics db-cxns)
           (vreset! commit-enqueued?-vol true)))
       (fn [_]
-        (swap! est-backlog-size-atom dec)))
+        ))
     (add-callback! success-fn failure-fn)))
 
 ;; --
@@ -356,13 +313,10 @@
   (run-async!
     metrics
     db-cxns
-    (fn [singleton-cxn singleton-kv-cxn]
+    (fn [singleton-cxn _singleton-kv-cxn]
       (let [next-continuation
             (metrics/time-exec-continuation! metrics
-              (store/continuation!
-                singleton-cxn
-                singleton-kv-cxn
-                continuation))]
+              (store/continuation! singleton-cxn continuation))]
         (if-not (domain/empty-continuation? next-continuation)
           (submit-continuation! metrics
             db-cxns
