@@ -7,9 +7,11 @@ if [[ $(git status --porcelain) ]]; then
   exit 1
 fi
 
+VERSION_CLJ_FILE="src/me/untethr/nostr/common/version.clj"
+
 # safety - we want to fail (via set -e) if version.clj doesn't look like it
 # restored from a previous release:
-grep "\"SNAPSHOT\"" src/me/untethr/nostr/common/version.clj
+grep "\"SNAPSHOT\"" "${VERSION_CLJ_FILE}"
 
 read -rp 'Version: ' VERSION
 
@@ -31,13 +33,13 @@ git tag "v${VERSION}"
 git push origin "v${VERSION}"
 
 # probably non-os portable sed command (works on mac):
-sed -i '' 's/"SNAPSHOT"/"'"${VERSION}"'"/g' src/me/untethr/nostr/common/version.clj
+sed -i '' 's/"SNAPSHOT"/"'"${VERSION}"'"/g' "${VERSION_CLJ_FILE}"
 
 make clean uberjar
 
 mv target/me.untethr.nostr-relay.jar \
   "target/me.untethr.nostr-relay-${VERSION}.jar"
 
-git checkout -- src/me/untethr/nostr/version.clj
+git checkout -- "${VERSION_CLJ_FILE}"
 
 tar -czvf "target/me.untethr.nostr-relay-${VERSION}.tar.gz" conf/* -C target "me.untethr.nostr-relay-${VERSION}.jar"
