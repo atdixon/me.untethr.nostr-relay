@@ -241,7 +241,11 @@
       (> (alength ^bytes (.getBytes ^String (get event-obj :content)))
         (:optional-max-content-length conf)))
     (format "event \"content\" too long; maximum content length is %d"
-      (:optional-max-content-length conf))))
+      (:optional-max-content-length conf))
+    (and
+      (vector? (:tags event-obj))
+      (> (count (:tags event-obj)) 5000))
+    (format "too many event tags: %d" (count (:tags event-obj)))))
 
 (defn- handle-rejected-event!
   [metrics websocket-state ch-sess event-obj raw-message rejection-message-str]

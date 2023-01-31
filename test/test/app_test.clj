@@ -141,7 +141,11 @@
       (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
                          {:created_at (+ (#'app/current-system-epoch-seconds) 50)})))
       (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
-                         {:created_at (+ (#'app/current-system-epoch-seconds) 200)}))))))
+                         {:created_at (+ (#'app/current-system-epoch-seconds) 200)})))
+      (is (= [:accept] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
+                         {:tags (mapv (fn [i] ["p" (str i)]) (range 0 5000))})))
+      (is (= [:reject] (invoke-sut! (make-test-conf ["1-2"] nil nil 100)
+                         {:tags (mapv (fn [i] ["p" (str i)]) (range 0 5001))}))))))
 
 (deftest receive-accepted-event-test
   ;; This test is an \"integration\"-ish test for the `app/receive-accepted-event!`
