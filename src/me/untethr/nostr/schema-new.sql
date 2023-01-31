@@ -99,8 +99,11 @@ create table if not exists channels
 --  Note that there just isn't a way to get a pagination / sort with limit on created_at
 --  here:
 drop index if exists idx_event_id_created_at;
+--
 create index if not exists idx_event_id_ on n_events (deleted_, event_id collate nocase);
+--
 drop index if exists idx_event_pubkey_created_at;
+--
 create index if not exists idx_event_pubkey_ on n_events (deleted_, pubkey collate nocase);
 -- Support kind in (?,...) ... order by created_at ... limit ...:
 create index if not exists idx_event_kind_created_at on n_events (kind, deleted_, created_at);
@@ -109,31 +112,54 @@ create index if not exists idx_event_pubkey_created_at on n_events (pubkey, dele
 -- Support pubkey in (?,...) and kind in (?...) ... order by created_at ... limit ...:
 create index if not exists idx_event_pubkey_kind_created_at on n_events (pubkey, kind, deleted_, created_at);
 -- Support trigger deletion of kind 0, 3 and kind [10000, 19999] events.
-create index if not exists idx_kind_pubkey on n_events (kind, pubkey, deleted_);
+--  Dropping, it's covered by just prior:
+drop index if exists idx_kind_pubkey;
+-- create index if not exists idx_kind_pubkey on n_events (kind, pubkey, deleted_);
 -- Support global timeline queries, say. (Also support getting max created_at in db, etc...)
 create index if not exists idx_event_created_at on n_events (deleted_, created_at);
 --
 -- Support #e in (?,...) ... order by created_at ... limit ...:
 -- We also like that we get a single index here on tagged_event_id to support our trigger
 --   that updates source_event_deleted_ to match the actual tagged event's deleted_.
-create index if not exists idx_e_tag_created_at on e_tags (tagged_event_id, source_event_deleted_, source_event_created_at);
+create index if not exists idx_e_tag_created_at on e_tags (tagged_event_id,
+                                                           source_event_deleted_,
+                                                           source_event_created_at);
 -- Support #e in (?,...) and kind in (?...) ... order by create_at ... limit ...:
-create index if not exists idx_e_tag_kind_created_at on e_tags (source_event_kind, tagged_event_id, source_event_deleted_, source_event_created_at);
+create index if not exists idx_e_tag_kind_created_at on e_tags (source_event_kind,
+                                                                tagged_event_id,
+                                                                source_event_deleted_,
+                                                                source_event_created_at);
 --
 -- Support #p in (?,...) ... order by created_at ... limit ...:
-create index if not exists idx_p_tag_created_at on p_tags (tagged_pubkey, source_event_deleted_, source_event_created_at);
+create index if not exists idx_p_tag_created_at on p_tags (tagged_pubkey,
+                                                           source_event_deleted_,
+                                                           source_event_created_at);
 -- Support #p in (?,...) and kind in (?...) ... order by create_at ... limit ...:
-create index if not exists idx_p_tag_kind_created_at_fixed on p_tags (source_event_kind, tagged_pubkey, source_event_deleted_, source_event_created_at);
+create index if not exists idx_p_tag_kind_created_at_fixed on p_tags (source_event_kind,
+                                                                      tagged_pubkey,
+                                                                      source_event_deleted_,
+                                                                      source_event_created_at);
+--
 drop index if exists idx_p_tag_kind_created_at;
 -- dropped: create index if not exists idx_p_tag_kind_created_at on p_tags (source_event_kind, source_event_id, source_event_deleted_, source_event_created_at);
+--
 -- Support trigger setting source_event_delete_ = 1 for non-latest kind 3 p_tag table rows. (Note: we are not
 -- going to support doing this for x_tags on kind 3 events b/c nip-02 does not indicate generic tags for kind 3s.
 -- Specifically, we will allow kind 3 events with generic tags and write them to raw_event but we will not
 -- index non-#p tags and support non-#p tag queries for kind 3s.)
-create index if not exists idx_p_tag_pubkey_kind on p_tags (source_event_pubkey, source_event_kind, source_event_created_at);
+--
+-- dropping this one unused ... pubkey + kind query goes to n_events
+drop index if exists idx_p_tag_pubkey_kind;
+--
+-- create index if not exists idx_p_tag_pubkey_kind on p_tags (source_event_pubkey,
+--                                                             source_event_kind,
+--                                                             source_event_created_at);
 --
 -- Support #t in (?,...) ... order by created_at ... limit ...:
-create index if not exists idx_x_tag_created_at on x_tags (generic_tag, tagged_value, source_event_deleted_, source_event_created_at);
+create index if not exists idx_x_tag_created_at on x_tags (generic_tag,
+                                                           tagged_value,
+                                                           source_event_deleted_,
+                                                           source_event_created_at);
 --
 --
 -- Triggers.
@@ -175,39 +201,51 @@ end;
 -- *replaced* event via continuations, we want those subsequent continuation
 -- tag inserts to obtain the proper source_event_deleted_ status. Win/win here.
 --
-create trigger if not exists insert_replaceable_kind_e_tags
+-- One other note: at any time we may purge deleted_ = 1 rows from the n_events
+-- table; hence the use of coalesce() in these triggers. An implication here is
+-- that we may end up orphaning tags table rows with deleted_ = 1. we can clean
+-- these up at any time however.
+--
+--
+drop trigger if exists insert_replaceable_kind_e_tags;
+--
+create trigger if not exists insert_replaceable_kind_e_tags_new
     after insert
     on e_tags
 begin
     update e_tags
     set source_event_deleted_ =
-            (select v.deleted_
+            coalesce((select v.deleted_
              from n_events v
-             where v.event_id = NEW.source_event_id)
+             where v.event_id = NEW.source_event_id), 1)
     where source_event_id = NEW.source_event_id;
 end;
 --
-create trigger if not exists insert_replaceable_kind_p_tags
+drop trigger if exists insert_replaceable_kind_p_tags;
+--
+create trigger if not exists insert_replaceable_kind_p_tags_new
     after insert
     on p_tags
 begin
     update p_tags
     set source_event_deleted_ =
-            (select v.deleted_
-             from n_events v
-             where v.event_id = NEW.source_event_id)
+            coalesce((select v.deleted_
+                      from n_events v
+                      where v.event_id = NEW.source_event_id), 1)
     where source_event_id = NEW.source_event_id;
 end;
 --
-create trigger if not exists insert_replaceable_kind_x_tags
+drop trigger if exists insert_replaceable_kind_x_tags;
+--
+create trigger if not exists insert_replaceable_kind_x_tags_new
     after insert
     on x_tags
 begin
     update x_tags
     set source_event_deleted_ =
-            (select v.deleted_
-             from n_events v
-             where v.event_id = NEW.source_event_id)
+            coalesce((select v.deleted_
+                      from n_events v
+                      where v.event_id = NEW.source_event_id), 1)
     where source_event_id = NEW.source_event_id;
 end;
 --
@@ -237,11 +275,14 @@ create trigger if not exists update_deleted_rows
     on n_events
     for each row
 begin
-    delete from e_tags
+    delete
+    from e_tags
     where source_event_id = OLD.event_id;
-    delete from p_tags
+    delete
+    from p_tags
     where source_event_id = OLD.event_id;
-    delete from x_tags
+    delete
+    from x_tags
     where source_event_id = OLD.event_id;
 end;
 --

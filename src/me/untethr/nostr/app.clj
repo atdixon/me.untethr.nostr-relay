@@ -747,6 +747,7 @@
           (jetty/uri-req-pred "/.well-known/nostr.json")
           (fn [_req] {:status 200
                       :content-type "application/json"
+                      :headers {"Access-Control-Allow-Origin" "*"}
                       :body nip05-json}))
         ;; -- /q --
         (jetty/create-simple-handler

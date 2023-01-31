@@ -121,6 +121,7 @@
               (jdbc/with-transaction [tx (get-singleton-connection! db-cxns)]
                 (jdbc/execute-one! tx
                   (apply vector
+                    ;; triggers will delete corresponding entries from tags tables
                     (format "delete from n_events where event_id in (%s)"
                       (str/join ","
                         (apply str (repeat (count to-delete-event-ids) "?"))))
