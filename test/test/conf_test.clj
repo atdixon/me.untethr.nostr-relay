@@ -20,12 +20,14 @@
   (with-open [reader (StringReader.
                        (str
                          "http:\n"
+                         "  host: 127.0.0.1\n"
                          "  port: 1234\n"
                          "sqlite:\n"
                          "  file: \"nx.db\"\n"))]
     (let [parsed (conf/parse-conf reader)]
       (is (= "nx.db" (:sqlite-file parsed)))
       (is (= 1234 (:http-port parsed)))
+      (is (= "127.0.0.1" (:http-host parsed)))
       (is (nil? (:optional-hostname parsed)))
       (is (nil? (:optional-supported-kinds-range-set parsed)))))
 

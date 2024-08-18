@@ -7,6 +7,7 @@
 ;; known dependencies: test.config-test/make-test-conf
 (defrecord Conf
   [^String optional-hostname
+   ^String http-host
    ^Long http-port
    ^String sqlite-file
    ^String sqlite-kv-file
@@ -20,6 +21,7 @@
    nip42-auth-enabled?])
 
 (defn pretty* [{:keys [optional-hostname
+                       http-host
                        http-port
                        sqlite-file
                        sqlite-kv-file
@@ -34,6 +36,7 @@
   (str/join
     "\n"
     [(format "hostname: %s" (or optional-hostname "none specified"))
+     (format "bind address: %s" http-host)
      (format "port: %d" http-port)
      (format "database file: %s" sqlite-file)
      (format "database file (k/v store): %s" sqlite-kv-file)
@@ -112,6 +115,7 @@
   (let [from-yaml (yaml/parse-stream reader)]
     (->Conf
       (get-in from-yaml [:hostname])
+      (get-in from-yaml [:http :host])
       (long (get-in from-yaml [:http :port]))
       (get-in from-yaml [:sqlite :file])
       (get-in from-yaml [:sqlite :file-kv])

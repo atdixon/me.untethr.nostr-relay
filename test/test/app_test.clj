@@ -23,7 +23,7 @@
   ([supported-kinds-vec unserved-kinds-vec max-content-length]
    (make-test-conf supported-kinds-vec unserved-kinds-vec max-content-length nil))
   ([supported-kinds-vec unserved-kinds-vec max-content-length max-created-at-delta]
-   (conf/->Conf nil 1234 "nx.db" "nx-kb.db"
+   (conf/->Conf nil "127.0.0.1" 1234 "nx.db" "nx-kb.db"
      (some->> supported-kinds-vec (hash-map :supported-kinds) conf/parse-supported-kinds*)
      (some->> unserved-kinds-vec (hash-map :unserved-kinds) conf/parse-unserved-kinds*)
      max-content-length max-created-at-delta nil nil nil nil)))
